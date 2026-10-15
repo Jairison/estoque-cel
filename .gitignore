@@ -1,0 +1,13 @@
+# Banco de dados e backups (contém dados da loja e senhas criptografadas — nunca versionar)
+data/
+
+# Dependências e logs
+node_modules/
+*.log
+npm-debug.log*
+
+# Arquivos do editor / sistema
+*.code-workspace
+.vscode/
+.DS_Store
+Thumbs.db

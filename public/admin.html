@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-area="admin">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Administração · Império Cell</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@1,600&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="icon" href="img/logo.png">
+  <script src="js/core.js"></script>
+  <script src="js/admin.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark" data-ico="crown"></div>
+        <div>
+          <div class="brand-name" data-store>Império <b>CELL</b></div>
+          <div class="brand-sub">Painel administrativo</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <div class="nav-label">Visão geral</div>
+        <a href="#/dashboard" data-route="dashboard" data-ico-left="grid">Dashboard</a>
+        <div class="nav-label">Estoque</div>
+        <a href="#/estoque" data-route="estoque" data-ico-left="box">Aparelhos <span class="count hidden" id="lowCount"></span></a>
+        <a href="#/entrada" data-route="entrada" data-ico-left="in">Nova entrada</a>
+        <a href="#/movimentacoes" data-route="movimentacoes" data-ico-left="swap">Movimentações</a>
+        <div class="nav-label">Gestão</div>
+        <a href="#/usuarios" data-route="usuarios" data-ico-left="users">Usuários <span class="count hidden" id="pendingCount"></span></a>
+        <a href="#/auditoria" data-route="auditoria" data-ico-left="shield">Auditoria</a>
+        <a href="#/configuracoes" data-route="configuracoes" data-ico-left="sliders">Configurações</a>
+        <div class="nav-label">Atalhos</div>
+        <a href="/colaborador?admin=1" target="_blank" data-ico-left="external">Visão do colaborador</a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="user-card">
+          <div class="avatar" id="avatar"></div>
+          <div class="who"><strong id="userName"></strong><small>Administrador</small></div>
+          <button class="btn btn-ghost btn-icon btn-sm" id="logoutBtn" title="Sair" aria-label="Sair" data-ico="logout"></button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="btn btn-ghost btn-icon menu-btn" id="menuBtn" aria-label="Menu" data-ico="menu"></button>
+        <div>
+          <div class="crumb" id="crumb">Painel</div>
+          <h1 id="pageTitle">Dashboard</h1>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn btn-ghost btn-icon" id="themeBtn" data-theme-icon aria-label="Alternar tema"></button>
+        <button class="btn hide-sm" id="quickIn" data-ico-left="plus">Entrada</button>
+        <button class="btn btn-primary" id="quickOut" data-ico-left="out">Saída</button>
+      </header>
+
+      <main class="content" id="view"></main>
+    </div>
+  </div>
+</body>
+</html>

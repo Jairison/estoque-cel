@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-area="colaborador">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Estoque · Império Cell</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@1,600&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="icon" href="img/logo.png">
+  <script src="js/core.js"></script>
+  <script src="js/colaborador.js" defer></script>
+</head>
+<body>
+  <div class="c-shell">
+    <header class="c-top">
+      <div class="brand">
+        <div class="brand-mark" data-ico="crown"></div>
+        <div>
+          <div class="brand-name" data-store>Império <b>CELL</b></div>
+          <div class="brand-sub">Estoque da loja</div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <a href="/admin" class="btn btn-sm hide-sm hidden" id="adminLink" data-ico-left="crown">Painel admin</a>
+      <button class="btn btn-ghost btn-icon" id="themeBtn" data-theme-icon aria-label="Alternar tema"></button>
+      <div class="user-card" style="padding:6px 8px 6px 6px;border-radius:12px">
+        <div class="avatar violet" id="avatar" style="width:32px;height:32px;border-radius:9px"></div>
+        <div class="who hide-sm"><strong id="userName"></strong><small id="userRole"></small></div>
+        <button class="btn btn-ghost btn-icon btn-sm" id="pwBtn" title="Alterar senha" aria-label="Alterar senha" data-ico="lock"></button>
+        <button class="btn btn-ghost btn-icon btn-sm" id="logoutBtn" title="Sair" aria-label="Sair" data-ico="logout"></button>
+      </div>
+    </header>
+
+    <section class="c-hero">
+      <div>
+        <div class="hello" id="hello">Olá!</div>
+        <div class="big"><strong id="totalUnits">—</strong><span>iPhones disponíveis na loja</span></div>
+        <div class="mini">
+          <div><b id="totalModels">—</b>modelos</div>
+          <div><b id="totalVariants">—</b>opções (modelo + GB)</div>
+          <div><b id="myToday">—</b>suas saídas hoje</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-lg" id="imeiBtn" data-ico-left="barcode">Saída por IMEI</button>
+      </div>
+    </section>
+
+    <div class="c-layout">
+      <section class="card">
+        <div class="card-head">
+          <div><h3>Estoque da loja</h3><p>Escolha os aparelhos e adicione ao pedido</p></div>
+          <div class="seg" id="viewSeg">
+            <button data-view="lista" class="active" data-ico-left="menu">Lista</button>
+            <button data-view="cards" data-ico-left="grid">Por modelo</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="input-icon grow" data-icon-in="search">
+            <input class="input" id="search" placeholder="Buscar modelo, GB ou cor…" autocomplete="off">
+          </div>
+          <select class="select" id="modelFilter" aria-label="Modelo"></select>
+          <button class="btn btn-ghost btn-icon" id="refreshBtn" title="Atualizar estoque" aria-label="Atualizar estoque" data-ico="refresh"></button>
+        </div>
+        <div class="toolbar" style="padding-top:12px;padding-bottom:12px"><div class="chips" id="storageChips"></div></div>
+        <div id="stock"></div>
+      </section>
+
+      <aside class="side-col">
+        <section class="card order-card" id="orderCard">
+          <div class="card-head">
+            <div><h3>Pedido</h3><p id="orderSub">Nenhum aparelho adicionado</p></div>
+            <button class="btn btn-ghost btn-sm hidden" id="clearOrder">Limpar</button>
+          </div>
+          <div id="orderItems"></div>
+          <form class="card-body" id="orderForm" style="display:grid;gap:12px;border-top:1px solid var(--border)">
+            <div class="field"><label for="o-customer">Cliente</label><input class="input" id="o-customer" name="customer" maxlength="80" placeholder="Nome do cliente (opcional)"></div>
+            <div class="field"><label for="o-reason">Motivo</label><select class="select" id="o-reason" name="reason"></select></div>
+            <div class="field"><label for="o-note">Observação</label><input class="input" id="o-note" name="note" maxlength="300" placeholder="Ex.: Pix, nota nº… (opcional)"></div>
+            <button class="btn btn-primary btn-lg btn-block" type="submit" id="confirmBtn" data-loading="Registrando..." disabled>Confirmar saída</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><div><h3>Minhas saídas</h3><p>Últimos registros feitos por você</p></div></div>
+          <div class="list" id="myMoves" style="max-height:420px;overflow:auto"></div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <button class="order-fab hidden" id="orderFab"></button>
+</body>
+</html>

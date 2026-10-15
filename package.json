@@ -1,0 +1,14 @@
+{
+  "name": "imperio-cell-estoque",
+  "version": "1.0.0",
+  "description": "Sistema de estoque de iPhones — Império Cell (admin + colaborador)",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js --demo"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

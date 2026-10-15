@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Acesso · Império Cell</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@1,600&display=swap">
+  <!-- caminhos absolutos: esta página é servida em /acesso/<token> -->
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="icon" href="/img/logo.png">
+  <script src="/js/core.js"></script>
+  <script src="/js/acesso.js" defer></script>
+</head>
+<body>
+  <main class="login-page">
+    <section class="login-panel">
+      <img class="login-logo" src="/img/logo.png" alt="Império Cell">
+      <div id="authBox"><div class="skeleton" style="height:260px"></div></div>
+      <div class="login-foot">
+        <span>© <span id="year"></span> Império Cell</span>
+        <button class="btn btn-ghost btn-sm" type="button" id="themeBtn" data-theme-icon aria-label="Alternar tema"></button>
+      </div>
+    </section>
+    <section class="login-art" aria-hidden="true">
+      <div class="art-copy">
+        <div class="eyebrow">Acesso do colaborador</div>
+        <h2>Seu link pessoal para o estoque da loja.</h2>
+        <p>Consulte os iPhones disponíveis por modelo, GB e cor e registre as saídas dos pedidos de qualquer lugar.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -13,7 +13,11 @@ const os = require('node:os');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
+// DATA_DIR: pasta dos dados. Na nuvem (Render) aponta para o disco permanente, ex.: /var/data
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
+// Atrás de um proxy (Render, Nginx…) o IP real do cliente vem no cabeçalho X-Forwarded-For
+const TRUST_PROXY = process.env.TRUST_PROXY === '1' || !!process.env.RENDER;
+const PUBLIC_URL_ENV = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const SESSION_TTL = 12 * 60 * 60 * 1000; // 12h
@@ -227,12 +231,20 @@ function getSession(req, area) {
   s.exp = Date.now() + SESSION_TTL;
   return { user, token };
 }
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (fwd) return fwd;
+  }
+  return req.socket.remoteAddress || '?';
+}
 function startSession(res, user, area) {
   if (area === 'admin' && user.role !== 'admin') area = 'colaborador';
   const token = crypto.randomBytes(32).toString('hex');
   sessions.set(token, { userId: user.id, area, exp: Date.now() + SESSION_TTL });
   const prev = res.getHeader('Set-Cookie');
-  const cookie = `${COOKIE[area]}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}`;
+  const https = res.req?.headers['x-forwarded-proto'] === 'https' || res.req?.socket?.encrypted;
+  const cookie = `${COOKIE[area]}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}${https ? '; Secure' : ''}`;
   res.setHeader('Set-Cookie', prev ? [].concat(prev, cookie) : cookie);
   return area;
 }
@@ -249,7 +261,7 @@ function route(method, pattern, access, handler) {
 
 // ── Autenticação
 route('POST', '/api/login', 'public', ({ req, res, body }) => {
-  const ip = req.socket.remoteAddress || '?';
+  const ip = clientIp(req);
   const a = loginAttempts.get(ip);
   if (a?.until > Date.now()) throw new HttpError(429, `Muitas tentativas. Tente novamente em ${Math.ceil((a.until - Date.now()) / 60000)} min.`);
   if (a?.until && a.until <= Date.now()) loginAttempts.delete(ip);
@@ -295,7 +307,7 @@ route('POST', '/api/setup', 'public', ({ res, body }) => {
 const registerAttempts = new Map();
 route('POST', '/api/register', 'public', ({ req, res, body }) => {
   if (!db.users.length) bad('O sistema ainda não foi configurado pelo administrador.');
-  const ip = req.socket.remoteAddress || '?';
+  const ip = clientIp(req);
   const a = registerAttempts.get(ip);
   if (a && a.reset > Date.now() && a.n >= 5) throw new HttpError(429, 'Muitos cadastros em sequência. Tente novamente mais tarde.');
   const name = str(body.name, 60);
@@ -691,8 +703,8 @@ function lanAddresses() {
 }
 route('GET', '/api/network', 'admin', () => ({
   port,
-  publicUrl: db.settings.publicUrl || '',
-  lanUrls: lanAddresses().map((ip) => `http://${ip}:${port}`),
+  publicUrl: db.settings.publicUrl || PUBLIC_URL_ENV,
+  lanUrls: process.env.RENDER ? [] : lanAddresses().map((ip) => `http://${ip}:${port}`),
 }));
 
 route('POST', '/api/users/:id/link', 'admin', ({ user, params }) => {
@@ -729,7 +741,7 @@ route('GET', '/api/invite/:token', 'public', ({ params }) => {
 });
 
 route('POST', '/api/invite/:token', 'public', ({ req, res, params, body }) => {
-  const ip = req.socket.remoteAddress || '?';
+  const ip = clientIp(req);
   const a = loginAttempts.get(ip);
   if (a?.until > Date.now()) throw new HttpError(429, `Muitas tentativas. Tente novamente em ${Math.ceil((a.until - Date.now()) / 60000)} min.`);
   const u = byToken(params.token);
@@ -976,11 +988,14 @@ async function findPort(start) {
   throw new Error('Nenhuma porta livre encontrada.');
 }
 let port = PORT;
-findPort(PORT).then((p) => { port = p; server.listen(port); }).catch((e) => { console.error(e.message); process.exit(1); });
+if (process.env.PORT) server.listen(port); // porta definida pelo ambiente (Render): usa exatamente ela
+else findPort(PORT).then((p) => { port = p; server.listen(port); }).catch((e) => { console.error(e.message); process.exit(1); });
 server.on('listening', () => {
   console.log('\n  ♛  Império Cell — Estoque de iPhones');
   console.log(`  ➜  Neste computador:  http://localhost:${port}`);
-  for (const ip of lanAddresses()) console.log(`  ➜  Na rede da loja:   http://${ip}:${port}   (outros computadores e celulares no mesmo Wi-Fi)`);
+  if (PUBLIC_URL_ENV) console.log(`  ➜  Endereço público:  ${PUBLIC_URL_ENV}`);
+  console.log(`  ➜  Dados em:         ${DATA_DIR}`);
+  if (!process.env.RENDER) for (const ip of lanAddresses()) console.log(`  ➜  Na rede da loja:   http://${ip}:${port}   (outros computadores e celulares no mesmo Wi-Fi)`);
   console.log('');
   if (!db.users.length) {
     console.log('  Primeiro acesso: abra o endereço acima e cadastre o e-mail e a senha do administrador.\n');

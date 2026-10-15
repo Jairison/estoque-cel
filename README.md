@@ -63,3 +63,16 @@ Para escolher a porta: `PORT=8080 npm start` (no PowerShell: `$env:PORT=8080; np
 ## Dados
 
 Tudo fica em `data/db.json`. Todo dia é salvo um backup automático em `data/backups/`, que guarda os últimos 30 dias.
+
+## Publicar na internet (Render, com dados permanentes)
+
+O arquivo [`render.yaml`](render.yaml) já configura tudo: servidor Node.js, região Virginia (EUA) e **disco permanente de 1 GB** em `/var/data`, onde ficam o estoque, os usuários e os backups.
+
+1. Crie uma conta em [render.com](https://render.com) e conecte sua conta do GitHub.
+2. Clique em **New + → Blueprint**, escolha o repositório **`estoque-cel`** e clique em **Apply**.
+3. Confirme o plano **Starter**, obrigatório para ter disco permanente.
+4. Quando o deploy terminar, abra o endereço `https://estoque-cel.onrender.com` (ou o que o Render mostrar) e faça o **primeiro acesso** cadastrando o administrador.
+
+A cada `git push` na branch `main`, o Render publica a nova versão sozinho, **sem apagar os dados**. Os links individuais dos colaboradores usam automaticamente o endereço público do Render.
+
+Variáveis de ambiente aceitas: `PORT`, `DATA_DIR` (pasta dos dados), `TRUST_PROXY=1` (atrás de proxy) e `PUBLIC_URL` (endereço público, se não for o do Render).

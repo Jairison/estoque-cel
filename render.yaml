@@ -1,0 +1,27 @@
+# Render Blueprint — publica o sistema com disco permanente para os dados.
+# No Render: New + → Blueprint → selecione este repositório → Apply.
+services:
+  - type: web
+    name: estoque-cel
+    runtime: node
+    # O plano "starter" é necessário para ter disco permanente (os dados não se perdem ao reiniciar).
+    plan: starter
+    # Região mais próxima do Brasil disponível no Render.
+    region: virginia
+    branch: main
+    autoDeploy: true
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /login
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Os dados (estoque, usuários, backups) ficam no disco permanente abaixo.
+      - key: DATA_DIR
+        value: /var/data
+      - key: TRUST_PROXY
+        value: "1"
+    disk:
+      name: dados-estoque
+      mountPath: /var/data
+      sizeGB: 1

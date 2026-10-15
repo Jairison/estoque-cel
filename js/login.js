@@ -2,7 +2,7 @@
 /* Tela de acesso: entrar, criar conta (solicitação) e primeiro acesso (cadastro do administrador) */
 let role = new URLSearchParams(location.search).get('area') === 'admin' ? 'admin' : 'colaborador';
 let sessions = { admin: null, colaborador: null };
-let mode = 'login'; // login | register | setup | sent
+let mode = 'login'; // login | register | setup | sent | forgot | forgot-sent
 
 $('#feats').innerHTML = [['barcode', 'Controle por IMEI'], ['shield', 'Acesso por perfil'], ['trend', 'Relatórios em tempo real']]
   .map(([i, t]) => `<span>${icon(i)}${t}</span>`).join('');
@@ -20,7 +20,8 @@ const field = (id, label, type, ic, attrs = '') => `
       ${type === 'password' ? `<button type="button" class="btn btn-ghost btn-icon btn-sm pw-toggle" data-pw-toggle aria-label="Mostrar senha">${icon('eye')}</button>` : ''}
     </div>
   </div>`;
-const emailField = (auto = 'username') => field('email', 'E-mail', 'email', 'user', `autocomplete="${auto === 'username' ? 'username' : 'email'}" autocapitalize="none" spellcheck="false" placeholder="voce@exemplo.com" required`);
+const presetEmail = new URLSearchParams(location.search).get('email') || '';
+const emailField = (auto = 'username') => field('email', 'E-mail', 'email', 'user', `autocomplete="${auto === 'username' ? 'username' : 'email'}" autocapitalize="none" spellcheck="false" placeholder="voce@exemplo.com" value="${esc(presetEmail)}" required`);
 const errorBox = '<div class="login-error" id="authError" role="alert"></div>';
 const link = (to, text) => `<button type="button" class="btn btn-ghost btn-sm" data-go="${to}" style="padding:0 6px;color:var(--gold)">${text}</button>`;
 
@@ -38,7 +39,7 @@ function render() {
         ${field('password', 'Senha', 'password', 'lock', 'autocomplete="current-password" placeholder="••••••••" required')}
         ${errorBox}
         <button class="btn btn-primary btn-lg btn-block" type="submit" data-loading="Entrando...">Entrar</button>
-        <p class="muted" style="text-align:center;font-size:13px">Ainda não tem acesso? ${link('register', 'Criar conta')}</p>
+        <p class="muted" style="text-align:center;font-size:13px">Ainda não tem acesso? ${link('register', 'Criar conta')} · ${link('forgot', 'Esqueci minha senha')}</p>
       </form>
       ${continueBox()}`;
   } else if (mode === 'register') {
@@ -69,6 +70,22 @@ function render() {
         ${errorBox}
         <button class="btn btn-primary btn-lg btn-block" type="submit" data-loading="Configurando...">${icon('crown')}Criar administrador e entrar</button>
       </form>`;
+  } else if (mode === 'forgot') {
+    box.innerHTML = `
+      <h1>Esqueci minha senha</h1>
+      <p class="lead">Informe seu e-mail. Você vai receber um link para criar uma nova senha.</p>
+      <form id="authForm" novalidate>
+        ${emailField('email')}
+        ${errorBox}
+        <button class="btn btn-primary btn-lg btn-block" type="submit" data-loading="Enviando...">Enviar link por e-mail</button>
+        <p class="muted" style="text-align:center;font-size:13px">Lembrou a senha? ${link('login', 'Entrar')}</p>
+      </form>`;
+  } else if (mode === 'forgot-sent') {
+    box.innerHTML = `
+      <div class="confirm-ico" style="background:var(--green-soft);color:var(--green)">${icon('check')}</div>
+      <h1>Verifique seu e-mail</h1>
+      <p class="lead">Se o e-mail estiver cadastrado, você vai receber um link para criar uma nova senha. Confira também a caixa de spam.</p>
+      <button class="btn btn-primary btn-lg btn-block" data-go="login">Voltar para o login</button>`;
   } else if (mode === 'sent') {
     box.innerHTML = `
       <div class="confirm-ico" style="background:var(--green-soft);color:var(--green)">${icon('check')}</div>
@@ -112,6 +129,12 @@ box.addEventListener('submit', async (e) => {
   const f = Object.fromEntries(new FormData(e.target));
   const btn = $('button[type=submit]', e.target);
   const email = (f.email || '').trim();
+  if (mode === 'forgot') {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return showError('Informe um e-mail válido.');
+    try { await withLoading(btn, () => api('/api/forgot', { method: 'POST', body: { email } })); mode = 'forgot-sent'; render(); }
+    catch (ex) { showError(ex.message); }
+    return;
+  }
   if (mode !== 'login') {
     if (!f.name?.trim()) return showError('Informe seu nome.');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return showError('Informe um e-mail válido.');
@@ -139,7 +162,7 @@ box.addEventListener('submit', async (e) => {
 
 // Contas já conectadas neste navegador: oferece continuar sem digitar a senha de novo
 function continueBox() {
-  const rows = [['colaborador', 'Área do colaborador', '/colaborador'], ['admin', 'Painel do administrador', '/admin']]
+  const rows = [['colaborador', 'Área do colaborador', 'colaborador.html'], ['admin', 'Painel do administrador', 'admin.html']]
     .filter(([k]) => sessions[k]);
   if (!rows.length) return '';
   return `<div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--border)">

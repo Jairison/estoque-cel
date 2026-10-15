@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="css/app.css">
   <link rel="icon" href="img/logo.png">
   <script src="js/core.js"></script>
+  <script type="module" src="js/db.js"></script>
   <script src="js/admin.js" defer></script>
 </head>
 <body>
@@ -35,7 +36,7 @@
         <a href="#/auditoria" data-route="auditoria" data-ico-left="shield">Auditoria</a>
         <a href="#/configuracoes" data-route="configuracoes" data-ico-left="sliders">Configurações</a>
         <div class="nav-label">Atalhos</div>
-        <a href="/colaborador?admin=1" target="_blank" data-ico-left="external">Visão do colaborador</a>
+        <a href="colaborador.html?admin=1" target="_blank" data-ico-left="external">Visão do colaborador</a>
       </nav>
 
       <div class="sidebar-foot">
@@ -60,7 +61,10 @@
         <button class="btn btn-primary" id="quickOut" data-ico-left="out">Saída</button>
       </header>
 
-      <main class="content" id="view"></main>
+      <main class="content" id="view">
+        <div class="kpis"><div class="card skeleton" style="height:128px"></div><div class="card skeleton" style="height:128px"></div><div class="card skeleton" style="height:128px"></div><div class="card skeleton" style="height:128px"></div></div>
+        <div class="card skeleton" style="height:340px"></div>
+      </main>
     </div>
   </div>
 </body>

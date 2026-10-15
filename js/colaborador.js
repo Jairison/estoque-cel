@@ -325,4 +325,7 @@ function describeOrder(items) {
 
 load();
 // Atualização automática a cada 30s enquanto a aba estiver visível (mantém o pedido em andamento)
-setInterval(() => { if (!document.hidden && !$('.modal-backdrop') && !document.activeElement?.matches('#stock input, #orderForm input')) load(); }, 30000);
+// Tempo real: quando outro colaborador ou o admin mexe no estoque, a tela se atualiza sozinha
+const canRefresh = () => !document.hidden && !$('.modal-backdrop') && !document.activeElement?.matches('#stock input, #orderForm input');
+window.addEventListener('db-change', () => { if (canRefresh()) load(); });
+setInterval(() => { if (canRefresh()) load(); }, 60000);

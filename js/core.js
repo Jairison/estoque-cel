@@ -104,30 +104,24 @@ function brandHtml(name) {
 }
 
 // ── API
+// Os dados ficam no Firebase: api() repassa cada operação para js/db.js (carregado como módulo)
+const DB_READY = new Promise((resolve) => { window.__dbResolve = resolve; if (window.DB) resolve(); });
+const PUBLIC_CALLS = ['/api/login', '/api/register', '/api/setup', '/api/forgot', '/api/sessions'];
 async function api(path, { method = 'GET', body } = {}) {
-  let res;
+  await DB_READY;
   try {
-    res = await fetch(path, {
-      method,
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch', 'X-Area': document.documentElement.dataset.area || 'colaborador' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    throw new Error('Sem conexão com o servidor.');
+    return await window.DB.call(method, path, body);
+  } catch (err) {
+    if (err.status === 401 && !PUBLIC_CALLS.includes(path)) {
+      location.href = document.documentElement.dataset.area === 'admin' ? 'index.html?area=admin' : 'index.html';
+    }
+    throw new Error(err.message || 'Erro inesperado.');
   }
-  let data = null;
-  try { data = await res.json(); } catch {}
-  if (res.status === 401 && !['/api/login', '/api/register'].includes(path) && !path.startsWith('/api/invite/')) {
-    location.href = document.documentElement.dataset.area === 'admin' ? '/login?area=admin' : '/login';
-    throw new Error('Sessão expirada.');
-  }
-  if (!res.ok) throw new Error(data?.error || `Erro ${res.status}`);
-  return data;
 }
 async function logout() {
-  try { await api('/api/logout', { method: 'POST' }); } catch {}
-  location.href = '/login';
+  let to = 'index.html';
+  try { to = (await api('/api/logout', { method: 'POST' })).redirect || to; } catch {}
+  location.href = to;
 }
 
 // ── Toasts
@@ -410,20 +404,17 @@ function openChangePassword() {
   m.$('[data-form]').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
 }
 
-// Página aberta direto do arquivo (duplo clique): o sistema precisa do servidor para funcionar
+// Página aberta direto do arquivo (duplo clique): o navegador bloqueia os módulos do Firebase
 if (location.protocol === 'file:') {
   document.addEventListener('DOMContentLoaded', () => {
     document.body.innerHTML = `
       <div style="min-height:100vh;display:grid;place-items:center;padding:24px">
         <div class="card card-pad" style="max-width:560px">
           <div class="confirm-ico">${icon('alert')}</div>
-          <h2 style="font-size:22px;letter-spacing:-.02em">Abra o sistema pelo servidor</h2>
-          <p class="text-2" style="margin:8px 0 18px">Este arquivo foi aberto direto do computador. O sistema precisa ser iniciado pelo terminal:</p>
-          <ol class="text-2" style="padding-left:20px;display:grid;gap:8px">
-            <li>Abra o terminal na pasta <span class="mono">estoque-cel</span></li>
-            <li>Rode <span class="mono gold">npm start</span></li>
-            <li>Abra no navegador o endereço que aparecer (ex.: <span class="mono gold">http://localhost:3000</span>)</li>
-          </ol>
+          <h2 style="font-size:22px;letter-spacing:-.02em">Abra o sistema pelo link</h2>
+          <p class="text-2" style="margin:8px 0 18px">Este arquivo foi aberto direto do computador. Use o endereço publicado no GitHub Pages:</p>
+          <p><span class="mono gold">https://jairison.github.io/estoque-cel/</span></p>
+          <p class="muted" style="margin-top:14px;font-size:12.5px">Para testar no computador: <span class="mono">npm start</span> e abra <span class="mono">http://localhost:5500</span>.</p>
         </div>
       </div>`;
   });

@@ -11,3 +11,8 @@ npm-debug.log*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Firebase (emuladores locais)
+.firebase/
+firebase-debug.log
+firestore-debug.log

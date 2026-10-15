@@ -1,0 +1,94 @@
+rules_version = '2';
+
+// Império Cell — regras de segurança do Cloud Firestore.
+// Cole este conteúdo em: Firebase Console → Firestore Database → Regras → Publicar.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function userPath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function ownerPath() { return /databases/$(database)/documents/meta/owner; }
+    function privatePath() { return /databases/$(database)/documents/settings/private; }
+
+    // Usuário com cadastro ativo (aprovado e não desativado)
+    function active() { return signedIn() && exists(userPath()) && get(userPath()).data.status == 'active'; }
+    function isAdmin() { return active() && get(userPath()).data.role == 'admin'; }
+    // Estado após a gravação: permite ao 1º administrador criar tudo num único lote
+    function isAdminAfter() {
+      return signedIn() && existsAfter(userPath())
+        && getAfter(userPath()).data.role == 'admin' && getAfter(userPath()).data.status == 'active';
+    }
+    function onlyChanged(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    // Dono do sistema (1º administrador). Só pode ser criado uma vez.
+    match /meta/owner {
+      allow read: if true;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+
+    // Nome da loja e catálogo: leitura pública (tela de login), alteração só pelo admin
+    match /settings/public {
+      allow read: if true;
+      allow write: if isAdminAfter();
+    }
+    // Código da loja: só o admin vê
+    match /settings/private {
+      allow read: if isAdmin();
+      allow write: if isAdminAfter();
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAdmin() || (
+        signedIn() && request.auth.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && (
+          // 1º acesso: o primeiro cadastro vira o administrador principal
+          (request.resource.data.role == 'admin' && request.resource.data.status == 'active'
+            && !exists(ownerPath()) && existsAfter(ownerPath()) && getAfter(ownerPath()).data.uid == uid)
+          // Cadastro sem código: aguarda aprovação
+          || (request.resource.data.role == 'colaborador' && request.resource.data.status == 'pending')
+          // Cadastro com o código da loja correto: acesso liberado na hora
+          || (request.resource.data.role == 'colaborador' && request.resource.data.status == 'active'
+            && exists(privatePath())
+            && request.resource.data.joinCode == get(privatePath()).data.joinCode)
+        )
+      );
+      // A própria pessoa só pode atualizar o horário do último acesso
+      allow update: if isAdmin() || (signedIn() && request.auth.uid == uid && onlyChanged(['lastLogin']));
+      allow delete: if isAdmin();
+    }
+
+    // Aparelhos: todos os usuários ativos veem (sem preços); o colaborador só pode dar saída
+    match /units/{id} {
+      allow read: if active();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        active() && resource.data.status == 'disponivel' && request.resource.data.status == 'saida'
+        && onlyChanged(['status', 'outAt', 'outMovementId', 'updatedAt'])
+      );
+    }
+
+    // Custo, preço, fornecedor e observações: somente o admin
+    match /unitPrices/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // Movimentações: o colaborador vê e cria apenas as próprias saídas (sem valores)
+    match /movements/{id} {
+      allow read: if isAdmin() || (active() && resource.data.userId == request.auth.uid);
+      allow create: if isAdmin() || (
+        active() && request.resource.data.userId == request.auth.uid
+        && request.resource.data.type == 'saida'
+        && !('value' in request.resource.data) && !('cost' in request.resource.data)
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    // Auditoria: qualquer pessoa conectada registra as próprias ações; só o admin lê
+    match /logs/{id} {
+      allow read: if isAdmin();
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+    }
+  }
+}

@@ -1,14 +1,10 @@
 {
   "name": "imperio-cell-estoque",
-  "version": "1.0.0",
-  "description": "Sistema de estoque de iPhones — Império Cell (admin + colaborador)",
-  "main": "server.js",
+  "version": "2.0.0",
+  "description": "Sistema de estoque de iPhones — Império Cell (GitHub Pages + Firebase)",
   "private": true,
   "scripts": {
-    "start": "node server.js",
-    "demo": "node server.js --demo"
-  },
-  "engines": {
-    "node": ">=18"
+    "start": "node dev-server.js",
+    "emuladores": "npx firebase-tools@15.34.0 emulators:start --project demo-estoque"
   }
 }

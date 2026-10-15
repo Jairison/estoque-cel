@@ -1,78 +1,56 @@
 # Império Cell — Estoque de iPhones
 
-Sistema de estoque com dois perfis (Administrador e Colaborador) no mesmo sistema.
+Sistema de estoque com duas áreas, **Administrador** e **Colaborador**, no mesmo sistema.
+As telas ficam publicadas no **GitHub Pages**. Login e dados ficam no **Firebase** (Authentication + Cloud Firestore), compartilhados entre todos os aparelhos.
 
-## Como rodar
+**Endereço:** https://jairison.github.io/estoque-cel/
 
-Requer Node.js 18 ou superior. Não tem dependências, então não precisa de `npm install`.
+## Configurar o Firebase (uma vez só, ~5 minutos)
 
-```bash
-npm start        # inicia em http://localhost:3000
-npm run demo     # inicia e carrega dados de exemplo (só se o estoque estiver vazio)
-```
+1. Acesse [console.firebase.google.com](https://console.firebase.google.com) com sua conta Google e clique em **Criar projeto** (ex.: `imperio-cell-estoque`). O Google Analytics pode ficar desativado.
+2. **Authentication** → **Vamos começar** → **Método de login** → ative **E-mail/senha** → Salvar.
+3. **Firestore Database** → **Criar banco de dados** → escolha a região **`southamerica-east1` (São Paulo)** → modo **produção**.
+4. Ainda no Firestore, abra a aba **Regras**, apague o conteúdo, cole todo o arquivo [`firestore.rules`](firestore.rules) e clique em **Publicar**.
+5. **Authentication → Configurações → Domínios autorizados** → **Adicionar domínio** → `jairison.github.io`.
+6. Em **⚙ Configurações do projeto → Seus apps**, clique no ícone **`</>`** (Web), dê um nome e registre. Copie os valores de `firebaseConfig` para o arquivo [`js/firebase-config.js`](js/firebase-config.js) e envie para o GitHub.
+7. Abra o endereço do sistema e faça o **primeiro acesso**: o primeiro cadastro vira o administrador principal.
 
-## Acesso por e-mail e senha
-
-1. **Primeiro acesso**: ao abrir o sistema pela primeira vez, aparece a tela **"Configure o administrador"**. Ali você cadastra o nome, o e-mail e a senha da conta principal.
-2. **Cadastrar colaboradores**: há dois caminhos.
-   - O administrador cadastra direto em **Usuários → Novo usuário**, informando e-mail, senha e perfil.
-   - A pessoa clica em **"Criar conta"** na tela de login e cadastra o próprio e-mail e senha. A conta fica **pendente** até o administrador validar em **Usuários → Solicitações de acesso**, onde pode aprovar (como colaborador ou administrador) ou recusar.
-3. **Login**: sempre com e-mail e senha.
-
-### Cadastro do próprio colaborador (código da loja)
-
-Cada pessoa tem o **seu próprio cadastro**, e todos ficam ligados ao mesmo estoque.
-- Na tela de login, o colaborador clica em **Criar conta** e informa nome, e-mail e senha.
-- Com o **código da loja**, que aparece para o admin em **Usuários**, o acesso é liberado na hora. Sem o código, o cadastro fica aguardando aprovação do admin.
-- **Novo código** troca o código. Quem já tem conta não é afetado.
-
-### Admin e colaborador conectados ao mesmo tempo
-
-As sessões do admin e do colaborador são separadas. Os dois podem estar conectados no mesmo navegador sem que um derrube ou assuma a conta do outro, e a tela de login sempre abre para entrar com outra conta. Em computadores compartilhados, o admin deve clicar em **Sair** ao terminar.
-
-### Link de acesso individual (colaborador em outro computador ou celular)
-
-Em **Usuários**, o botão **Link** gera um endereço pessoal para cada colaborador, que pode ser copiado ou enviado pelo WhatsApp.
-- No cadastro de um novo usuário, deixe a senha em branco. A pessoa abre o link no aparelho dela e **cria a própria senha** no primeiro acesso.
-- Nos acessos seguintes, o mesmo link pede só a senha. O login normal com e-mail e senha também funciona.
-- **Gerar novo link** invalida o anterior. **Revogar** desativa o link.
-
-Onde o link funciona:
-- **Mesma rede (Wi-Fi da loja)**: funciona direto, com o endereço local do computador onde o sistema roda (ex.: `http://10.0.0.163:3001`). Esse computador precisa estar ligado e com o sistema aberto.
-- **Pela internet (outro local)**: o sistema precisa estar publicado num servidor ou num túnel. Informe o endereço em **Configurações → Acesso externo**, e os links passam a usar esse endereço.
-
-`npm run demo` cria contas de exemplo: `admin@imperiocell.com` / `admin123` e `colaborador@imperiocell.com` / `colab123`.
-
-Se a porta 3000 estiver ocupada por outro programa, o sistema usa a próxima livre (3001, 3002…). **Use sempre o endereço que aparece no terminal.** Não abra os arquivos `.html` direto pelo explorador de arquivos.
-
-Para escolher a porta: `PORT=8080 npm start` (no PowerShell: `$env:PORT=8080; npm start`).
+Os valores do `firebaseConfig` **não são secretos**. Quem protege os dados são as regras do Firestore.
 
 ## Perfis
 
-**Colaborador**: vê quantos iPhones existem por modelo, capacidade (GB) e cor, e registra saídas (por modelo ou por IMEI). Não vê preços nem custos.
+**Colaborador**
+- Vê o estoque da loja por modelo, capacidade (GB), cor e condição, com atualização em tempo real.
+- Monta pedidos com vários aparelhos e dá saída, ou dá saída por IMEI.
+- **Não vê** preços, custos, dashboard, usuários nem auditoria. Isso é bloqueado pelas regras do Firebase, não só escondido na tela.
 
 **Administrador** tem acesso a tudo:
-- Dashboard com faturamento, lucro, valor do estoque, gráficos e alertas de estoque baixo
-- Aparelhos: busca, filtros, edição, status (disponível/reservado/manutenção), ações em lote e exportação CSV
-- Nova entrada: em lote por IMEI (com validação) ou por quantidade
-- Movimentações: histórico completo com filtros por período, detalhes e estorno
-- Usuários: criar, editar, ativar e desativar, redefinir senha
-- Auditoria: registro de todas as ações
-- Configurações: nome da loja, limite de estoque baixo, catálogo de modelos, capacidades e cores, backup
+- Dashboard com faturamento, lucro, valor do estoque, gráficos e alertas de estoque baixo.
+- Aparelhos: busca (inclusive por IMEI), filtros, edição, status, ações em lote e exportação CSV.
+- Nova entrada por IMEI (com validação) ou por quantidade.
+- Movimentações com estorno, usuários, auditoria, configurações e backup.
 
-## Dados
+## Acesso e cadastro
+- **Primeiro acesso:** o primeiro cadastro no sistema vira o administrador.
+- **Colaborador cria a própria conta:** na tela de login, em **Criar conta**. Com o **código da loja** (visível para o admin em *Usuários*), o acesso é liberado na hora. Sem o código, a conta aguarda aprovação.
+- **Admin cadastra a pessoa:** em *Usuários → Novo usuário*. Sem senha, a pessoa recebe um **e-mail para criar a própria senha**. O botão **Acesso** gera o link do sistema para enviar pelo WhatsApp.
+- **Esqueci minha senha:** na tela de login, o Firebase envia o e-mail de redefinição.
+- Admin e colaborador podem ficar conectados ao mesmo tempo no mesmo navegador, cada um na própria conta.
 
-Tudo fica em `data/db.json`. Todo dia é salvo um backup automático em `data/backups/`, que guarda os últimos 30 dias.
+## Testar no computador
 
-## Publicar na internet (Render, com dados permanentes)
+```bash
+npm start            # abre as telas em http://localhost:5500 (usa o Firebase configurado)
+npm run emuladores   # opcional: Firebase local para testes (precisa de Java), com useEmulator = true
+```
 
-O arquivo [`render.yaml`](render.yaml) já configura tudo: servidor Node.js, região Virginia (EUA) e **disco permanente de 1 GB** em `/var/data`, onde ficam o estoque, os usuários e os backups.
+## Estrutura
 
-1. Crie uma conta em [render.com](https://render.com) e conecte sua conta do GitHub.
-2. Clique em **New + → Blueprint**, escolha o repositório **`estoque-cel`** e clique em **Apply**.
-3. Confirme o plano **Starter**, obrigatório para ter disco permanente.
-4. Quando o deploy terminar, abra o endereço `https://estoque-cel.onrender.com` (ou o que o Render mostrar) e faça o **primeiro acesso** cadastrando o administrador.
-
-A cada `git push` na branch `main`, o Render publica a nova versão sozinho, **sem apagar os dados**. Os links individuais dos colaboradores usam automaticamente o endereço público do Render.
-
-Variáveis de ambiente aceitas: `PORT`, `DATA_DIR` (pasta dos dados), `TRUST_PROXY=1` (atrás de proxy) e `PUBLIC_URL` (endereço público, se não for o do Render).
+| Arquivo | Função |
+|---|---|
+| `index.html` | Login, criar conta, primeiro acesso, esqueci a senha |
+| `admin.html` / `js/admin.js` | Painel do administrador |
+| `colaborador.html` / `js/colaborador.js` | Tela do colaborador |
+| `js/db.js` | Todas as operações no Firebase (login, estoque, saídas, usuários…) |
+| `js/firebase-config.js` | Dados do projeto Firebase da loja |
+| `firestore.rules` | Regras de segurança (quem pode ler e alterar o quê) |

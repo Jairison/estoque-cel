@@ -1053,10 +1053,10 @@ async function viewUsuarios() {
       <tbody>${members.map((u) => `<tr data-id="${esc(u.id)}" class="${u.active ? '' : 'dim'}">
         <td><div class="cell-model"><div class="avatar ${u.role === 'admin' ? '' : 'violet'}">${esc(initials(u.name))}</div><div><strong>${esc(u.name)}${u.id === S.me.id ? ' <span class="badge plain gold" style="height:20px">Você</span>' : ''}</strong><small>${esc(u.email)}</small></div></div></td>
         <td>${u.role === 'admin' ? `<span class="badge gold">Administrador</span>` : `<span class="badge violet">Colaborador</span>`}</td>
-        <td>${u.active ? '<span class="badge green">Ativo</span>' : '<span class="badge red">Inativo</span>'}${u.defaultPassword ? ' <span class="badge orange" title="Ainda usa a senha padrão">Senha padrão</span>' : ''}${!u.hasPassword ? ' <span class="badge blue" title="Ainda não abriu o link para criar a senha">Aguardando 1º acesso</span>' : ''}</td>
+        <td>${u.active ? '<span class="badge green">Ativo</span>' : '<span class="badge red">Inativo</span>'}${u.defaultPassword ? ' <span class="badge orange" title="Ainda usa a senha padrão">Senha padrão</span>' : ''}${!u.lastLogin ? ' <span class="badge blue" title="Ainda não entrou no sistema">Nunca entrou</span>' : ''}</td>
         <td title="Criado em ${fmtDate(u.createdAt)}">${u.lastLogin ? fmtRelative(u.lastLogin) : '<span class="muted">Nunca</span>'}</td>
         <td><div class="actions">
-          ${u.id !== S.me.id ? `<button class="btn btn-sm ${u.hasLink ? '' : 'btn-ghost'}" data-act="link" title="Link de acesso individual">${icon('link')}${u.hasPassword ? 'Link' : 'Enviar link'}</button>` : ''}
+          ${u.id !== S.me.id ? `<button class="btn btn-sm btn-ghost" data-act="link" title="Link de acesso e e-mail de senha">${icon('link')}Acesso</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-act="toggle" ${u.id === S.me.id ? 'disabled' : ''}>${u.active ? 'Desativar' : 'Ativar'}</button>
           <button class="btn btn-ghost btn-icon btn-sm" data-act="edit" title="Editar">${icon('edit')}</button>
           <button class="btn btn-ghost btn-icon btn-sm" data-act="del" title="Excluir" ${u.id === S.me.id ? 'disabled' : ''}>${icon('trash')}</button>
@@ -1123,10 +1123,14 @@ function openUserForm(u) {
         <span class="hint" data-role-hint></span>
       </div>
       <div class="field"><label>Nome completo</label><input class="input" name="name" maxlength="60" required value="${esc(u?.name || '')}" placeholder="Ex.: Maria Silva"></div>
-      <div class="field"><label>E-mail (login)</label><input class="input" type="email" name="email" maxlength="120" required value="${esc(u?.email || '')}" placeholder="maria@exemplo.com" autocapitalize="none" spellcheck="false"></div>
-      <div class="field"><label>${editing ? 'Nova senha' : 'Senha'} <span class="muted">(opcional)</span></label><input class="input" name="password" type="password" minlength="6" autocomplete="new-password" placeholder="${editing ? 'Deixe em branco para manter' : 'Em branco = criada pelo link'}"></div>
+      <div class="field"><label>E-mail (login)</label><input class="input" type="email" name="email" maxlength="120" required value="${esc(u?.email || '')}" placeholder="maria@exemplo.com" autocapitalize="none" spellcheck="false" ${editing ? 'disabled' : ''}></div>
+      ${editing ? `<div class="field span-all"><label>Senha</label><div>${u.id === S.me.id
+        ? `<button type="button" class="btn btn-sm" data-own-pw>${icon('lock')}Alterar minha senha</button>`
+        : `<button type="button" class="btn btn-sm" data-reset-pw data-loading="Enviando...">${icon('chat')}Enviar e-mail para redefinir a senha</button>`}</div>
+        <span class="hint">Por segurança, cada pessoa define a própria senha.</span></div>` : `
+      <div class="field"><label>Senha <span class="muted">(opcional)</span></label><input class="input" name="password" type="password" minlength="6" autocomplete="new-password" placeholder="Em branco = convite por e-mail"></div>
       <div class="field"><label>Confirmar senha</label><input class="input" name="confirm" type="password" minlength="6" autocomplete="new-password" placeholder="Repita a senha"></div>
-      ${editing ? '' : `<p class="hint span-all" style="display:flex;gap:8px;align-items:flex-start">${icon('link')}<span>Deixando a senha em branco, o sistema gera um <b>link de acesso individual</b>. Envie o link para a pessoa: ela cria a própria senha no primeiro acesso.</span></p>`}
+      <p class="hint span-all" style="display:flex;gap:8px;align-items:flex-start">${icon('chat')}<span>Deixando a senha em branco, a pessoa recebe um <b>e-mail para criar a própria senha</b> e depois entra pelo link do sistema.</span></p>`}
       <button type="submit" hidden></button>
     </form>`,
     foot: `<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>${icon('check')}${editing ? 'Salvar' : 'Cadastrar usuário'}</button>`,
@@ -1147,86 +1151,61 @@ function openUserForm(u) {
   const save = async () => {
     const fd = Object.fromEntries(new FormData(m.$('[data-form]')));
     if (fd.password && fd.password !== fd.confirm) return toast('As senhas não conferem.', 'error');
-    const body = { name: fd.name, email: fd.email, role };
-    if (fd.password) body.password = fd.password;
+    const body = editing ? { name: fd.name, role } : { name: fd.name, email: fd.email, role };
+    if (!editing && fd.password) body.password = fd.password;
     try {
       const saved = await withLoading(m.$('[data-save]'), () => api(editing ? `/api/users/${u.id}` : '/api/users', { method: editing ? 'PUT' : 'POST', body }));
       m.close();
       toast(editing ? 'Usuário atualizado.' : 'Usuário cadastrado.');
-      if (!editing && !saved.hasPassword) setTimeout(() => openLinkModal(saved, true), 250);
+      if (!editing) setTimeout(() => openLinkModal(saved, true), 250);
       if (editing && u.id === S.me.id) { S.me = (await api('/api/me')).user; renderShell(); }
       rerender();
     } catch (err) { toast(err.message, 'error'); }
   };
   m.$('[data-save]').addEventListener('click', save);
   m.$('[data-form]').addEventListener('submit', (e) => { e.preventDefault(); save(); });
+  m.$('[data-own-pw]')?.addEventListener('click', () => { m.close(); openChangePassword(); });
+  m.$('[data-reset-pw]')?.addEventListener('click', async (e) => {
+    try { await withLoading(e.currentTarget, () => api(`/api/users/${u.id}/reset`, { method: 'POST' })); toast(`E-mail de redefinição enviado para ${u.email}.`); }
+    catch (err) { toast(err.message, 'error'); }
+  });
 }
 
-// Link de acesso individual: o colaborador abre no aparelho dele (outro computador/celular)
-async function openLinkModal(u, justCreated = false) {
-  let net;
-  try {
-    net = await api('/api/network');
-    if (!u.inviteToken) u.inviteToken = (await api(`/api/users/${u.id}/link`, { method: 'POST' })).inviteToken;
-  } catch (err) { return toast(err.message, 'error'); }
-  const bases = [...(net.publicUrl ? [net.publicUrl] : []), ...net.lanUrls];
-  if (!bases.length) bases.push(location.origin);
-  let base = bases[0];
-  const linkOf = () => `${base}/acesso/${u.inviteToken}`;
-  const msg = () => `Olá, ${u.name.split(' ')[0]}! Este é o seu link de acesso ao estoque da ${S.settings.storeName}:\n${linkOf()}\n${u.hasPassword ? 'Entre com a sua senha.' : 'No primeiro acesso você vai criar a sua senha.'}`;
-
+// Acesso individual: link do sistema com o e-mail da pessoa + e-mail do Firebase para criar/redefinir a senha
+function openLinkModal(u, justCreated = false) {
+  const base = location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '');
+  const link = `${base}index.html?email=${encodeURIComponent(u.email)}`;
+  const first = u.name.split(' ')[0];
+  const msg = `Olá, ${first}! Este é o seu acesso ao estoque da ${S.settings.storeName}:\n${link}\n${justCreated && u.invited ? 'Você vai receber um e-mail para criar a sua senha. Depois é só entrar pelo link acima.' : 'Entre com o seu e-mail e senha.'}`;
   const m = openModal({
     size: 'lg',
-    title: justCreated ? 'Usuário cadastrado! Envie o link de acesso' : `Link de acesso de ${u.name}`,
-    subtitle: `${esc(u.email)} · ${u.hasPassword ? 'abre a tela de login pessoal (pede a senha)' : 'no primeiro acesso a pessoa cria a própria senha'}`,
+    title: justCreated ? 'Usuário cadastrado! Envie o acesso' : `Acesso de ${u.name}`,
+    subtitle: `${esc(u.email)}${justCreated && u.invited ? ' · um e-mail para criar a senha já foi enviado' : ''}`,
     body: `
-      ${bases.length > 1 ? `<div class="field" style="margin-bottom:14px"><label>Endereço do servidor</label>
-        <select class="select" data-base>${bases.map((b) => `<option value="${esc(b)}">${esc(b)}${b === net.publicUrl ? ' — endereço público' : ' — rede local (Wi-Fi da loja)'}</option>`).join('')}</select></div>` : ''}
       <div class="field">
-        <label>Link individual</label>
+        <label>Link de acesso</label>
         <div style="display:flex;gap:8px">
-          <input class="input mono" data-url readonly value="${esc(linkOf())}">
+          <input class="input mono" data-url readonly value="${esc(link)}">
           <button class="btn btn-primary" data-copy>${icon('copy')}Copiar</button>
         </div>
+        <span class="hint">Abre a tela de login com o e-mail da pessoa já preenchido.</span>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
-        <a class="btn" data-wa target="_blank" rel="noopener">${icon('chat')}Enviar pelo WhatsApp</a>
-        <button class="btn btn-ghost" data-renew>${icon('refresh')}Gerar novo link</button>
-        <button class="btn btn-ghost" data-revoke style="color:var(--red)">${icon('x')}Revogar link</button>
+        <a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">${icon('chat')}Enviar pelo WhatsApp</a>
+        <button class="btn btn-ghost" data-reset data-loading="Enviando...">${icon('lock')}Enviar e-mail para ${justCreated && u.invited ? 'reenviar o convite' : 'criar/redefinir a senha'}</button>
       </div>
       <div class="banner" style="margin:18px 0 4px;background:var(--surface-2);border-color:var(--border)">
         ${icon('globe')}
-        <div class="grow text-2" style="font-size:12.5px">
-          ${net.publicUrl
-            ? `O link usa o <b>endereço público</b> configurado e funciona de qualquer lugar.`
-            : `Endereços da rede local (como <b>${esc(bases.find((b) => b !== net.publicUrl) || '').replace(/^https?:\/\//, '')}</b>) funcionam em aparelhos conectados <b>na mesma rede (Wi-Fi) da loja</b>. Para acessar de outro local pela internet, publique o sistema e informe o endereço em <a href="#/configuracoes" data-close style="color:var(--gold)">Configurações → Acesso externo</a>.`}
-          O link é pessoal: não compartilhe com outras pessoas. Se ele vazar, use “Gerar novo link”.
-        </div>
+        <div class="grow text-2" style="font-size:12.5px">O link funciona de qualquer lugar (celular, outro computador, outra rede). A pessoa entra com o <b>próprio e-mail e senha</b>. O e-mail de senha é enviado pelo Firebase. Peça para conferir também a caixa de spam.</div>
       </div>`,
     foot: `<button class="btn" data-close>Fechar</button>`,
-    onClose: () => { if (currentRoute() === 'usuarios') rerender(); },
   });
-  const update = () => {
-    m.$('[data-url]').value = linkOf();
-    m.$('[data-wa]').href = `https://wa.me/?text=${encodeURIComponent(msg())}`;
-  };
-  update();
-  m.$('[data-base]')?.addEventListener('change', (e) => { base = e.target.value; update(); });
   m.$('[data-copy]').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(linkOf()); }
-    catch { m.$('[data-url]').select(); document.execCommand('copy'); }
+    try { await navigator.clipboard.writeText(link); } catch { m.$('[data-url]').select(); document.execCommand('copy'); }
     toast('Link copiado.');
   });
-  m.$('[data-renew]').addEventListener('click', async () => {
-    const ok = await confirmDialog({ title: 'Gerar novo link?', message: 'O link anterior deixará de funcionar imediatamente.', confirmText: 'Gerar novo link', iconName: 'refresh' });
-    if (!ok) return;
-    try { u.inviteToken = (await api(`/api/users/${u.id}/link`, { method: 'POST' })).inviteToken; update(); toast('Novo link gerado. Envie o link atualizado.'); }
-    catch (err) { toast(err.message, 'error'); }
-  });
-  m.$('[data-revoke]').addEventListener('click', async () => {
-    const ok = await confirmDialog({ title: 'Revogar link?', message: `O link de <b>${esc(u.name)}</b> deixará de funcionar.${u.hasPassword ? ' A pessoa ainda poderá entrar pela tela de login com e-mail e senha.' : ''}`, confirmText: 'Revogar', danger: true });
-    if (!ok) return;
-    try { await api(`/api/users/${u.id}/link`, { method: 'DELETE' }); u.inviteToken = null; toast('Link revogado.'); m.close(); }
+  m.$('[data-reset]').addEventListener('click', async (e) => {
+    try { await withLoading(e.currentTarget, () => api(`/api/users/${u.id}/reset`, { method: 'POST' })); toast(`E-mail enviado para ${u.email}.`); }
     catch (err) { toast(err.message, 'error'); }
   });
 }
@@ -1310,23 +1289,12 @@ async function viewConfig() {
       ${chipEditor('storages', 'Capacidades', 'Opções de armazenamento disponíveis.', 'Ex.: 4TB')}
       ${chipEditor('colors', 'Cores', 'Sugestões de cores ao cadastrar aparelhos.', 'Ex.: Azul Meia-noite')}
       <div class="settings-section">
-        <div><h4>Acesso externo</h4><p>Endereço usado nos links individuais dos colaboradores.</p></div>
-        <form class="form-grid" data-public-form style="max-width:620px;grid-template-columns:1fr">
-          <div class="field"><label>Endereço público <span class="muted">(opcional)</span></label>
-            <input class="input mono" name="publicUrl" placeholder="https://estoque.suaempresa.com.br" value="${esc(s.publicUrl || '')}">
-            <span class="hint">Preencha quando o sistema estiver publicado na internet ou num servidor da empresa. Em branco, os links usam o endereço da rede local:</span>
-            <div class="chips" data-lan style="margin-top:6px"></div>
-          </div>
-          <div><button class="btn btn-primary btn-sm">${icon('check')}Salvar endereço</button></div>
-        </form>
-      </div>
-      <div class="settings-section">
         <div><h4>Segurança</h4><p>Altere a senha da sua conta de administrador.</p></div>
         <div><button class="btn" data-pw>${icon('lock')}Alterar minha senha</button></div>
       </div>
       <div class="settings-section">
-        <div><h4>Backup</h4><p>Baixe uma cópia completa dos dados. O sistema também guarda um backup automático diário na pasta <span class="mono">data/backups</span>.</p></div>
-        <div><a class="btn" href="/api/backup?area=admin" download>${icon('database')}Baixar backup (JSON)</a></div>
+        <div><h4>Backup</h4><p>Baixe uma cópia completa dos dados (estoque, movimentações, usuários e auditoria). Os dados ficam guardados no Firebase; o backup é uma cópia extra para você guardar.</p></div>
+        <div><button class="btn" data-backup data-loading="Gerando...">${icon('database')}Baixar backup (JSON)</button></div>
       </div>
     </div>
   `);
@@ -1339,12 +1307,16 @@ async function viewConfig() {
       return true;
     } catch (err) { toast(err.message, 'error'); return false; }
   };
-  api('/api/network').then((n) => {
-    $('[data-lan]', root).innerHTML = n.lanUrls.length ? n.lanUrls.map((u) => `<span class="badge plain mono">${esc(u)}</span>`).join('') : '<span class="muted">Nenhuma rede detectada</span>';
-  }).catch(() => {});
-  $('[data-public-form]', root).addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await saveSettings({ publicUrl: e.target.publicUrl.value.trim() }, 'Endereço público salvo.');
+  $('[data-backup]', root).addEventListener('click', async (e) => {
+    try {
+      const data = await withLoading(e.currentTarget, () => api('/api/backup'));
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      a.download = `backup-estoque-${localDay(new Date())}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      toast('Backup baixado.');
+    } catch (err) { toast(err.message, 'error'); }
   });
   $('[data-store-form]', root).addEventListener('submit', async (e) => {
     e.preventDefault();

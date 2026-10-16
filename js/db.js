@@ -98,9 +98,11 @@ function fbErr(e) {
     'auth/requires-recent-login': [401, 'Por segurança, saia e entre novamente antes de trocar a senha.'],
     'auth/user-disabled': [403, 'Esta conta foi desativada.'],
     'auth/operation-not-allowed': [500, 'O login por e-mail e senha não está ativado no Firebase (Authentication → Método de login).'],
+    'auth/configuration-not-found': [500, 'O login por e-mail e senha ainda não foi ativado no Firebase (Authentication → Vamos começar → E-mail/senha).'],
     'permission-denied': [403, 'Você não tem permissão para esta ação.'],
     'unavailable': [503, 'Sem conexão com o banco de dados. Verifique a internet.'],
     'failed-precondition': [500, 'O banco de dados (Firestore) ainda não foi criado no Firebase.'],
+    'not-found': [500, 'O banco de dados (Firestore) ainda não foi criado no Firebase.'],
   };
   const [status, msg] = map[code] || [500, 'Erro inesperado. Tente novamente.'];
   if (!map[code]) console.error(e);

@@ -6,9 +6,11 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
-    function userPath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
-    function ownerPath() { return /databases/$(database)/documents/meta/owner; }
-    function privatePath() { return /databases/$(database)/documents/settings/private; }
+    function docPath(col, id) { return /databases/$(database)/documents/$(col)/$(id); }
+    function userPath() { return docPath('users', request.auth.uid); }
+    function ownerPath() { return docPath('meta', 'owner'); }
+    function privatePath() { return docPath('settings', 'private'); }
+    function data() { return request.resource.data; }
 
     // Usuário com cadastro ativo (aprovado e não desativado)
     function active() { return signedIn() && exists(userPath()) && get(userPath()).data.status == 'active'; }
@@ -18,12 +20,13 @@ service cloud.firestore {
       return signedIn() && existsAfter(userPath())
         && getAfter(userPath()).data.role == 'admin' && getAfter(userPath()).data.status == 'active';
     }
-    function onlyChanged(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function onlyChanged(keys) { return data().diff(resource.data).affectedKeys().hasOnly(keys); }
+    function text(v, max) { return v is string && v.size() <= max; }
 
     // Dono do sistema (1º administrador). Só pode ser criado uma vez.
     match /meta/owner {
       allow read: if true;
-      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && data().uid == request.auth.uid && data().keys().hasOnly(['uid', 'at']);
     }
 
     // Nome da loja e catálogo: leitura pública (tela de login), alteração só pelo admin
@@ -38,34 +41,45 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
+      function validUser() {
+        return data().keys().hasOnly(['name', 'email', 'role', 'status', 'createdAt', 'lastLogin', 'joinCode'])
+          && text(data().name, 60) && data().name.size() > 0
+          && text(data().email, 120)
+          && data().role in ['admin', 'colaborador']
+          && data().status in ['active', 'pending', 'disabled'];
+      }
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
-      allow create: if isAdmin() || (
+      allow create: if validUser() && (isAdmin() || (
         signedIn() && request.auth.uid == uid
-        && request.resource.data.email == request.auth.token.email
+        && data().email == request.auth.token.email
         && (
           // 1º acesso: o primeiro cadastro vira o administrador principal
-          (request.resource.data.role == 'admin' && request.resource.data.status == 'active'
+          (data().role == 'admin' && data().status == 'active'
             && !exists(ownerPath()) && existsAfter(ownerPath()) && getAfter(ownerPath()).data.uid == uid)
           // Cadastro sem código: aguarda aprovação
-          || (request.resource.data.role == 'colaborador' && request.resource.data.status == 'pending')
+          || (data().role == 'colaborador' && data().status == 'pending')
           // Cadastro com o código da loja correto: acesso liberado na hora
-          || (request.resource.data.role == 'colaborador' && request.resource.data.status == 'active'
-            && exists(privatePath())
-            && request.resource.data.joinCode == get(privatePath()).data.joinCode)
+          || (data().role == 'colaborador' && data().status == 'active'
+            && exists(privatePath()) && data().joinCode == get(privatePath()).data.joinCode)
         )
-      );
+      ));
       // A própria pessoa só pode atualizar o horário do último acesso
-      allow update: if isAdmin() || (signedIn() && request.auth.uid == uid && onlyChanged(['lastLogin']));
+      allow update: if (isAdmin() && validUser()) || (signedIn() && request.auth.uid == uid && onlyChanged(['lastLogin']));
       allow delete: if isAdmin();
     }
 
-    // Aparelhos: todos os usuários ativos veem (sem preços); o colaborador só pode dar saída
+    // Aparelhos: todos os usuários ativos veem (sem preços).
+    // O colaborador só pode dar saída, e somente junto com a movimentação de saída que lista o aparelho.
     match /units/{id} {
       allow read: if active();
       allow create, delete: if isAdmin();
       allow update: if isAdmin() || (
-        active() && resource.data.status == 'disponivel' && request.resource.data.status == 'saida'
+        active() && resource.data.status == 'disponivel' && data().status == 'saida'
         && onlyChanged(['status', 'outAt', 'outMovementId', 'updatedAt'])
+        && data().outMovementId is string
+        && existsAfter(docPath('movements', data().outMovementId))
+        && getAfter(docPath('movements', data().outMovementId)).data.userId == request.auth.uid
+        && getAfter(docPath('movements', data().outMovementId)).data.unitIds.hasAny([id])
       );
     }
 
@@ -74,21 +88,34 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
-    // Movimentações: o colaborador vê e cria apenas as próprias saídas (sem valores)
+    // Movimentações: o colaborador vê e cria apenas as próprias saídas, sem valores,
+    // e a saída precisa corresponder a aparelhos que de fato saíram nesta mesma gravação.
     match /movements/{id} {
       allow read: if isAdmin() || (active() && resource.data.userId == request.auth.uid);
       allow create: if isAdmin() || (
-        active() && request.resource.data.userId == request.auth.uid
-        && request.resource.data.type == 'saida'
-        && !('value' in request.resource.data) && !('cost' in request.resource.data)
+        active()
+        && data().keys().hasOnly(['type', 'at', 'userId', 'userName', 'reason', 'customer', 'note', 'unitIds', 'items', 'qty', 'reverted'])
+        && data().userId == request.auth.uid
+        && data().userName == get(userPath()).data.name
+        && data().type == 'saida' && data().reverted == false
+        && data().qty is int && data().qty >= 1 && data().qty <= 500
+        && data().unitIds is list && data().unitIds.size() == data().qty
+        && data().items is list && data().items.size() == data().qty
+        && text(data().reason, 40) && text(data().customer, 80) && text(data().note, 300)
+        && getAfter(docPath('units', data().unitIds[0])).data.outMovementId == id
+        && getAfter(docPath('units', data().unitIds[data().qty - 1])).data.outMovementId == id
       );
       allow update, delete: if isAdmin();
     }
 
-    // Auditoria: qualquer pessoa conectada registra as próprias ações; só o admin lê
+    // Auditoria: só quem tem cadastro registra as próprias ações (com o próprio nome); só o admin lê
     match /logs/{id} {
       allow read: if isAdmin();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow create: if signedIn() && existsAfter(userPath())
+        && data().keys().hasOnly(['at', 'userId', 'userName', 'action', 'detail'])
+        && data().userId == request.auth.uid
+        && text(data().action, 40) && text(data().detail, 2000)
+        && (isAdminAfter() || data().userName == getAfter(userPath()).data.name);
     }
   }
 }

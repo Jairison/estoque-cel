@@ -9,7 +9,7 @@ import {
   updateProfile, sendPasswordResetEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
-  getFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
+  getFirestore, initializeFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
   query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { firebaseConfig, useEmulator } from './firebase-config.js';
@@ -120,7 +120,8 @@ function fb(name, temp = false) {
     // Instâncias temporárias ficam só na memória: não tocam nas sessões salvas no navegador
     const auth = temp ? initializeAuth(app, { persistence: inMemoryPersistence }) : getAuth(app);
     auth.languageCode = 'pt-BR';
-    const db = getFirestore(app);
+    // No emulador local, o canal em tempo real pode travar; lá usamos long polling (só nos testes)
+    const db = useEmulator ? initializeFirestore(app, { experimentalForceLongPolling: true }) : getFirestore(app);
     if (useEmulator) {
       connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
       connectFirestoreEmulator(db, '127.0.0.1', 8080);
@@ -210,9 +211,15 @@ async function addLog(c, user, action, detail) {
 
 // Valores (custo/preço) de uma movimentação — saídas feitas pelo colaborador não guardam preço,
 // então o admin calcula a partir da tabela de preços (unitPrices).
-function priceOf(prices, it) { const p = prices.get(it.id) || {}; return { cost: it.cost ?? p.cost ?? 0, price: it.price ?? p.price ?? 0 }; }
+// trusted = movimentação gravada pelo admin (traz valores próprios). Nas saídas de colaborador
+// os valores vêm SEMPRE da tabela de preços, nunca do que estiver gravado no documento.
+function priceOf(prices, it, trusted = true) {
+  const p = prices.get(it.id) || {};
+  return trusted ? { cost: it.cost ?? p.cost ?? 0, price: it.price ?? p.price ?? 0 } : { cost: p.cost ?? 0, price: p.price ?? 0 };
+}
 function withValues(m, prices) {
-  const items = (m.items || []).map((it) => ({ ...it, ...priceOf(prices, it) }));
+  const trusted = m.value !== undefined;
+  const items = (m.items || []).map((it) => ({ ...it, ...priceOf(prices, it, trusted) }));
   const value = m.value ?? (m.type === 'saida' ? round2(items.reduce((s, i) => s + i.price, 0)) : 0);
   const cost = m.cost ?? round2(items.reduce((s, i) => s + i.cost, 0));
   return { ...m, items, value, cost };

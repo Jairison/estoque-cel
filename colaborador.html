@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="css/app.css">
   <link rel="icon" href="img/logo.png">
   <script src="js/core.js"></script>
+  <script src="js/scanner.js"></script>
   <script type="module" src="js/db.js"></script>
   <script src="js/colaborador.js" defer></script>
 </head>
@@ -73,7 +74,10 @@
         <section class="card order-card" id="orderCard">
           <div class="card-head">
             <div><h3>Pedido</h3><p id="orderSub">Nenhum aparelho adicionado</p></div>
-            <button class="btn btn-ghost btn-sm hidden" id="clearOrder">Limpar</button>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-sm" id="scanBtn" data-ico-left="camera" title="Ler o IMEI pela câmera e adicionar o aparelho exato ao pedido">Escanear IMEI</button>
+              <button class="btn btn-ghost btn-sm hidden" id="clearOrder">Limpar</button>
+            </div>
           </div>
           <div id="orderItems"></div>
           <form class="card-body" id="orderForm" style="display:grid;gap:12px;border-top:1px solid var(--border)">

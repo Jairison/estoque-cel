@@ -663,15 +663,36 @@ function openAdminOut(units, after) {
         <div class="field"><label>Motivo</label><select class="select" name="reason">${S.settings.reasons.map((r) => `<option>${esc(r)}</option>`).join('')}</select></div>
         <div class="field"><label>Cliente <span class="muted">(opcional)</span></label><input class="input" name="customer" maxlength="80" placeholder="Nome do cliente"></div>
         <div class="field span-all"><label>Observação <span class="muted">(opcional)</span></label><input class="input" name="note" maxlength="300"></div>
+        <div class="field span-all"><label>Foto do IMEI <span class="muted">(opcional, comprovante)</span></label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap" data-photo-box>
+            <button type="button" class="btn btn-sm" data-cam>${icon('camera')}Tirar foto do IMEI</button>
+          </div>
+        </div>
       </form>`,
     foot: `<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-ok data-loading="Registrando...">${icon('out')}Confirmar saída</button>`,
   });
+  const photos = [];
+  const renderPhotos = () => {
+    m.$('[data-photo-box]').innerHTML = photos.map((p, i) => `<img class="photo-thumb" src="${p.image}" alt="IMEI ${esc(p.imei)}" title="IMEI ${esc(p.imei)}" data-i="${i}">`).join('')
+      + `<button type="button" class="btn btn-sm" data-cam>${icon('camera')}${photos.length ? 'Mais uma foto' : 'Tirar foto do IMEI'}</button>`;
+  };
+  m.$('[data-photo-box]').addEventListener('click', async (e) => {
+    const img = e.target.closest('img[data-i]');
+    if (img) return openPhotoViewer(img.src, img.title);
+    if (!e.target.closest('[data-cam]')) return;
+    const r = await openImeiScanner();
+    if (!r) return;
+    if (!units.some((u) => u.imei === r.imei)) toast(`Atenção: o IMEI ${r.imei} não é de nenhum aparelho desta saída.`, 'error');
+    photos.push({ imei: r.imei, image: r.photo });
+    renderPhotos();
+  });
   m.$('[data-ok]').addEventListener('click', async (e) => {
-    const body = { ...Object.fromEntries(new FormData(m.$('[data-form]'))), unitIds: units.map((u) => u.id) };
+    const body = { ...Object.fromEntries(new FormData(m.$('[data-form]'))), unitIds: units.map((u) => u.id), photos };
     try {
-      await withLoading(e.currentTarget, () => api('/api/stock/out', { method: 'POST', body }));
+      const r = await withLoading(e.currentTarget, () => api('/api/stock/out', { method: 'POST', body }));
       m.close();
       toast(`Saída de ${plural(units.length, 'aparelho registrada', 'aparelhos registrada')}.`);
+      if (r.photoError) toast(r.photoError, 'error');
       await Promise.all([loadUnits(), loadMovements()]);
       after?.();
       refreshLowBadge();
@@ -932,7 +953,7 @@ function renderMoves(root) {
       const canRevert = !m.reverted && (m.type === 'saida' || m.type === 'entrada');
       return `<tr data-id="${esc(m.id)}" style="cursor:pointer" class="${m.reverted ? 'dim' : ''}">
         <td class="num" style="white-space:nowrap">${fmtDateTime(m.at)}</td>
-        <td><span class="badge ${t.cls}">${t.label}</span></td>
+        <td><span class="badge ${t.cls}">${t.label}</span>${m.photos ? ` <span class="photo-chip" title="${plural(m.photos, 'foto do IMEI', 'fotos do IMEI')}">${icon('camera')}${m.photos}</span>` : ''}</td>
         <td class="wrap"><strong>${esc(describe(m.items))}</strong>${m.items.some((i) => i.imei) ? `<div class="muted mono" style="font-size:11.5px">${esc(m.items.filter((i) => i.imei).slice(0, 2).map((i) => i.imei).join(', '))}${m.items.length > 2 ? '…' : ''}</div>` : ''}</td>
         <td>${esc(m.reason)}</td>
         <td>${esc(m.customer || '—')}</td>
@@ -961,10 +982,20 @@ function openMoveDetails(m, root) {
       <div class="stat-row" style="border:0;padding:14px 0 0;justify-content:flex-end">
         <span>Quantidade<b>${m.qty}</b></span>
         ${m.type === 'saida' ? `<span>Valor<b>${fmtMoney(m.value)}</b></span><span>Lucro<b style="color:var(--green)">${fmtMoney(m.value - m.cost)}</b></span>` : m.type === 'entrada' ? `<span>Custo total<b>${fmtMoney(m.cost)}</b></span>` : ''}
-      </div>`,
+      </div>
+      ${m.photos ? `<div class="label" style="margin:20px 0 10px">${icon('camera')} Fotos do IMEI (comprovante)</div><div class="photo-grid" data-photos><div class="skeleton" style="height:120px"></div></div>` : ''}`,
     foot: `${canRevert ? `<button class="btn btn-danger" data-revert>${icon('undo')}Estornar</button>` : ''}<button class="btn" data-close>Fechar</button>`,
   });
   md.$('[data-revert]')?.addEventListener('click', () => { md.close(); revertMove(m, root); });
+  const grid = md.$('[data-photos]');
+  if (grid) {
+    api(`/api/movements/${m.id}/photos`).then((list) => {
+      grid.innerHTML = list.length
+        ? list.map((p) => `<figure><img src="${p.image}" alt="IMEI ${esc(p.imei)}"><figcaption class="mono">${esc(fmtImei(p.imei) || 'IMEI não informado')}</figcaption></figure>`).join('')
+        : '<p class="muted">Nenhuma foto encontrada.</p>';
+    }).catch((err) => { grid.innerHTML = `<p class="muted">${esc(err.message)}</p>`; });
+    grid.addEventListener('click', (e) => { const f = e.target.closest('figure'); if (f) openPhotoViewer(f.querySelector('img').src, f.querySelector('figcaption').textContent); });
+  }
 }
 
 async function revertMove(m, root) {

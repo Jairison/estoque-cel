@@ -86,6 +86,7 @@ const ICONS = {
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
   external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
 };
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -280,8 +281,16 @@ function openSaidaWizard({ groups, settings, preset = {}, onDone }) {
       ${st.useImei ? `
         <div class="field">
           <label for="w-imei">IMEI do aparelho</label>
-          <input class="input mono" id="w-imei" inputmode="numeric" maxlength="20" placeholder="Digite ou escaneie os 15 dígitos" value="${esc(st.imei || '')}" autofocus>
-          <span class="hint">Use o leitor de código de barras ou digite o IMEI que aparece na caixa (*#06#).</span>
+          <div class="imei-row">
+            <input class="input mono" id="w-imei" inputmode="numeric" maxlength="20" placeholder="Digite ou escaneie os 15 dígitos" value="${esc(st.imei || '')}" autofocus>
+            ${typeof openImeiScanner === 'function' ? `<button type="button" class="btn" data-cam>${icon('camera')}Câmera</button>` : ''}
+          </div>
+          <span class="hint">Use a câmera, o leitor de código de barras ou digite o IMEI que aparece na caixa (*#06#).</span>
+          ${st.photo ? `<div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+            <img class="photo-thumb" src="${st.photo}" alt="Foto do IMEI" data-view-photo>
+            <span class="photo-chip">${icon('camera')}Foto do IMEI anexada como comprovante</span>
+            <button type="button" class="btn btn-ghost btn-sm" data-rm-photo>${icon('x')}Remover</button>
+          </div>` : ''}
         </div>` : `
         <div class="step-label"><span class="n">1</span>Modelo</div>
         <select class="select" data-model>
@@ -344,10 +353,15 @@ function openSaidaWizard({ groups, settings, preset = {}, onDone }) {
     if (!b) return;
     keepText();
     if (b.dataset.mode) { st.useImei = b.dataset.mode === 'imei'; render(); }
+    else if (b.matches('[data-cam]')) {
+      openImeiScanner().then((r) => { if (r) { st.imei = r.imei; st.photo = r.photo; render(); toast(`IMEI ${r.imei} lido pela câmera.`); } });
+    }
+    else if (b.matches('[data-rm-photo]')) { st.photo = null; render(); }
     else if (b.dataset.storage !== undefined) { st.storage = b.dataset.storage; st.variant = ''; st.qty = 1; render(); }
     else if (b.dataset.variant !== undefined) { st.variant = b.dataset.variant; st.qty = 1; render(); }
     else if (b.dataset.qty) { st.qty = Math.min(maxQty(), Math.max(1, st.qty + Number(b.dataset.qty))); render(); }
   });
+  root.addEventListener('click', (e) => { const img = e.target.closest('[data-view-photo]'); if (img) openPhotoViewer(img.src, st.imei || ''); });
   root.addEventListener('change', (e) => {
     if (e.target.matches('[data-model]')) { keepText(); st.model = e.target.value; st.storage = ''; st.variant = ''; st.qty = 1; render(); }
     if (e.target.matches('[data-qty-input]')) { keepText(); st.qty = Math.min(maxQty(), Math.max(1, Math.floor(Number(e.target.value) || 1))); render(); }
@@ -360,6 +374,7 @@ function openSaidaWizard({ groups, settings, preset = {}, onDone }) {
       const imei = (st.imei || '').replace(/\D/g, '');
       if (imei.length !== 15) return toast('Informe um IMEI com 15 dígitos.', 'error');
       body.imei = imei;
+      if (st.photo) body.photos = [{ imei, image: st.photo }];
     } else {
       const [color, condition] = st.variant ? st.variant.split('|') : ['', ''];
       Object.assign(body, { model: st.model, storage: st.storage, color, condition, qty: st.qty });
@@ -368,7 +383,8 @@ function openSaidaWizard({ groups, settings, preset = {}, onDone }) {
       const r = await withLoading(e.currentTarget, () => api('/api/stock/out', { method: 'POST', body }));
       m.close();
       const it = r.movement.items[0];
-      toast(`Saída registrada: ${r.movement.qty}× ${it.model} ${it.storage}`);
+      toast(`Saída registrada: ${r.movement.qty}× ${it.model} ${it.storage}${r.movement.photos ? ' (com foto)' : ''}`);
+      if (r.photoError) toast(r.photoError, 'error');
       onDone?.(r.movement);
     } catch (err) { toast(err.message, 'error'); }
   });

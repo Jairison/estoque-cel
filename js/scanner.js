@@ -1,0 +1,247 @@
+/* Império Cell — leitor de IMEI pela câmera + foto como comprovante
+ * openImeiScanner() abre a câmera traseira, lê o código de barras do IMEI (caixa do iPhone ou tela *#06#)
+ * e devolve { imei, photo }. photo é um JPEG comprimido (data URL) para guardar junto com a saída.
+ * Leitura: BarcodeDetector nativo (Android/Chrome) ou a biblioteca ZXing (iPhone e demais navegadores).
+ */
+'use strict';
+
+const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.23.0/umd/index.min.js';
+const PHOTO_MAX_SIDE = 960;
+const PHOTO_MAX_CHARS = 420000; // limite seguro por foto no banco de dados
+
+let zxingLoading = null;
+function loadZxing() {
+  if (window.ZXing) return Promise.resolve(window.ZXing);
+  if (!zxingLoading) {
+    zxingLoading = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = ZXING_URL;
+      s.onload = () => resolve(window.ZXing);
+      s.onerror = () => { zxingLoading = null; reject(new Error('Não foi possível carregar o leitor de código de barras. Verifique a internet.')); };
+      document.head.append(s);
+    });
+  }
+  return zxingLoading;
+}
+
+// IMEI válido: 15 dígitos com dígito verificador (Luhn)
+function imeiLuhnOk(s) {
+  let sum = 0;
+  for (let i = 0; i < s.length; i++) { let d = +s[s.length - 1 - i]; if (i % 2) { d *= 2; if (d > 9) d -= 9; } sum += d; }
+  return sum % 10 === 0;
+}
+function extractImei(text) {
+  const digits = String(text || '').replace(/[^\d]/g, ' ');
+  for (const m of digits.matchAll(/\d{15,}/g)) {
+    const seq = m[0];
+    for (let i = 0; i + 15 <= seq.length; i++) { const c = seq.slice(i, i + 15); if (imeiLuhnOk(c)) return c; }
+  }
+  return '';
+}
+
+// Foto comprimida (JPEG) a partir de um canvas/vídeo/imagem
+function makePhoto(source, w, h) {
+  const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+  c.getContext('2d').drawImage(source, 0, 0, c.width, c.height);
+  for (const q of [0.7, 0.55, 0.4, 0.3]) {
+    const url = c.toDataURL('image/jpeg', q);
+    if (url.length <= PHOTO_MAX_CHARS) return url;
+  }
+  c.width = Math.round(c.width * 0.6); c.height = Math.round(c.height * 0.6);
+  c.getContext('2d').drawImage(source, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.4);
+}
+
+// Decodificadores
+async function makeDecoder() {
+  if ('BarcodeDetector' in window) {
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      const formats = ['code_128', 'code_39', 'ean_13', 'qr_code', 'data_matrix', 'pdf417'].filter((f) => supported.includes(f));
+      if (formats.includes('code_128')) {
+        const det = new window.BarcodeDetector({ formats });
+        return async (canvas) => (await det.detect(canvas)).map((b) => b.rawValue);
+      }
+    } catch { /* usa ZXing */ }
+  }
+  const Z = await loadZxing();
+  const hints = new Map();
+  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.QR_CODE, Z.BarcodeFormat.DATA_MATRIX]);
+  hints.set(Z.DecodeHintType.TRY_HARDER, true);
+  const reader = new Z.MultiFormatReader();
+  reader.setHints(hints);
+  return async (canvas) => {
+    try {
+      const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
+      return [reader.decode(bmp).getText()];
+    } catch { return []; } // nenhum código neste quadro
+  };
+}
+
+// Recorta uma faixa central (onde fica o guia) para leitura mais confiável
+function frameCanvas(src, w, h, band) {
+  const c = document.createElement('canvas');
+  const maxW = 1280;
+  const s = Math.min(1, maxW / w);
+  if (band) {
+    const bh = Math.round(h * 0.42), by = Math.round((h - bh) / 2);
+    c.width = Math.round(w * s); c.height = Math.round(bh * s);
+    c.getContext('2d').drawImage(src, 0, by, w, bh, 0, 0, c.width, c.height);
+  } else {
+    c.width = Math.round(w * s); c.height = Math.round(h * s);
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  }
+  return c;
+}
+
+function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
+  return new Promise((resolve) => {
+    let stream = null, timer = null, done = false, decoder = null, busy = false, tick = 0;
+    const m = openModal({
+      title,
+      subtitle: 'Aponte para o código de barras do IMEI (na caixa do iPhone ou na tela do *#06#).',
+      body: `
+        <div class="scanner">
+          <video playsinline muted autoplay data-video></video>
+          <div class="scanner-guide"><span></span></div>
+          <div class="scanner-status" data-status>${icon('barcode')}Iniciando a câmera…</div>
+        </div>
+        <div class="scanner-actions">
+          <button class="btn btn-primary" data-shot disabled>${icon('eye')}Tirar foto agora</button>
+          <label class="btn">${icon('download')}Escolher foto<input type="file" accept="image/*" capture="environment" data-file hidden></label>
+        </div>
+        <div data-result></div>`,
+      foot: `<button class="btn" data-close>Cancelar</button>`,
+      onClose: () => { stop(); if (!done) resolve(null); },
+    });
+    const video = m.$('[data-video]');
+    const status = (html, kind = '') => { const el = m.$('[data-status]'); el.className = `scanner-status ${kind}`; el.innerHTML = html; };
+
+    function stop() {
+      clearInterval(timer); timer = null;
+      stream?.getTracks().forEach((t) => t.stop()); stream = null;
+    }
+    function finish(imei, photo) {
+      done = true;
+      stop();
+      navigator.vibrate?.(120);
+      resolve({ imei, photo });
+      m.close();
+    }
+
+    // Foto sem código legível: deixa usar a foto e digitar o IMEI
+    function showFallback(photo) {
+      stop();
+      status(`${icon('alert')}Não encontrei um código de IMEI nesta foto.`, 'warn');
+      m.$('[data-result]').innerHTML = `
+        <div class="scanner-fallback">
+          <img src="${photo}" alt="Foto capturada">
+          <div style="flex:1;min-width:200px">
+            <div class="field"><label>Digite o IMEI que aparece na foto</label>
+              <input class="input mono" data-manual inputmode="numeric" maxlength="20" placeholder="15 dígitos"></div>
+            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+              <button class="btn btn-primary btn-sm" data-use>${icon('check')}Usar foto e IMEI</button>
+              <button class="btn btn-sm" data-retry>${icon('refresh')}Tentar de novo</button>
+            </div>
+          </div>
+        </div>`;
+      m.$('[data-manual]').focus();
+      m.$('[data-use]').addEventListener('click', () => {
+        const imei = m.$('[data-manual]').value.replace(/\D/g, '');
+        if (imei.length !== 15 || !imeiLuhnOk(imei)) return toast('IMEI inválido: confira os 15 dígitos.', 'error');
+        finish(imei, photo);
+      });
+      m.$('[data-retry]').addEventListener('click', () => { m.$('[data-result]').innerHTML = ''; start(); });
+    }
+
+    async function tryDecode(canvasFull, w, h, srcForPhoto) {
+      const tries = [frameCanvas(srcForPhoto, w, h, true), canvasFull];
+      for (const c of tries) {
+        const texts = await decoder(c);
+        for (const t of texts) { const imei = extractImei(t); if (imei) return imei; }
+        if (texts.length) status(`${icon('barcode')}Código lido, mas não é um IMEI. Aponte para o código do <b>IMEI</b>.`, 'warn');
+      }
+      return '';
+    }
+
+    async function scanFrame() {
+      if (busy || done || !video.videoWidth) return;
+      busy = true;
+      try {
+        const w = video.videoWidth, h = video.videoHeight;
+        const full = frameCanvas(video, w, h, false);
+        tick++;
+        // alterna entre a faixa central e o quadro inteiro para economizar processamento
+        const texts = await decoder(tick % 2 ? frameCanvas(video, w, h, true) : full);
+        for (const t of texts) {
+          const imei = extractImei(t);
+          if (imei) { status(`${icon('check')}IMEI ${imei}`, 'ok'); return finish(imei, makePhoto(video, w, h)); }
+        }
+        if (texts.length) status(`${icon('barcode')}Código lido, mas não é um IMEI. Aponte para o código do <b>IMEI</b>.`, 'warn');
+      } finally { busy = false; }
+    }
+
+    async function start() {
+      try {
+        decoder ||= await makeDecoder();
+      } catch (e) { status(`${icon('alert')}${esc(e.message)}`, 'warn'); return; }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        status(`${icon('alert')}Este navegador não permite usar a câmera ao vivo. Use “Escolher foto”.`, 'warn');
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+        if (done) return stop();
+        video.srcObject = stream;
+        await video.play().catch(() => {});
+        m.$('[data-shot]').disabled = false;
+        status(`${icon('barcode')}Procurando o código do IMEI… mantenha o celular firme.`);
+        timer = setInterval(scanFrame, 350);
+      } catch (e) {
+        const denied = e?.name === 'NotAllowedError' || e?.name === 'SecurityError';
+        status(`${icon('alert')}${denied ? 'Permita o acesso à câmera nas configurações do navegador, ou use “Escolher foto”.' : 'Não foi possível abrir a câmera. Use “Escolher foto”.'}`, 'warn');
+      }
+    }
+
+    // Foto manual do quadro atual
+    m.$('[data-shot]').addEventListener('click', async () => {
+      if (!video.videoWidth) return;
+      const w = video.videoWidth, h = video.videoHeight;
+      const photo = makePhoto(video, w, h);
+      clearInterval(timer);
+      status(`${icon('barcode')}Analisando a foto…`);
+      const imei = await tryDecode(frameCanvas(video, w, h, false), w, h, video);
+      if (imei) finish(imei, photo); else showFallback(photo);
+    });
+
+    // Foto da galeria / câmera nativa (funciona mesmo sem câmera ao vivo)
+    m.$('[data-file]').addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      stop();
+      status(`${icon('barcode')}Analisando a foto…`);
+      const img = new Image();
+      img.src = URL.createObjectURL(file);
+      try { await img.decode(); } catch { return status(`${icon('alert')}Não foi possível abrir esta imagem.`, 'warn'); }
+      decoder ||= await makeDecoder().catch(() => null);
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const photo = makePhoto(img, w, h);
+      const imei = decoder ? await tryDecode(frameCanvas(img, w, h, false), w, h, img) : '';
+      URL.revokeObjectURL(img.src);
+      if (imei) finish(imei, photo); else showFallback(photo);
+    });
+
+    start();
+  });
+}
+
+// Miniatura clicável para ver a foto em tamanho maior
+function openPhotoViewer(src, caption = '') {
+  openModal({
+    size: 'lg', title: 'Foto do IMEI', subtitle: esc(caption),
+    body: `<img src="${src}" alt="Foto do IMEI" style="width:100%;border-radius:14px;display:block">`,
+    foot: `<a class="btn" href="${src}" download="imei-${esc(caption.replace(/\D/g, '') || 'foto')}.jpg">${icon('download')}Baixar</a><button class="btn btn-primary" data-close>Fechar</button>`,
+  });
+}

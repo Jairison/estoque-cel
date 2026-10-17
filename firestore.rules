@@ -94,7 +94,8 @@ service cloud.firestore {
       allow read: if isAdmin() || (active() && resource.data.userId == request.auth.uid);
       allow create: if isAdmin() || (
         active()
-        && data().keys().hasOnly(['type', 'at', 'userId', 'userName', 'reason', 'customer', 'note', 'unitIds', 'items', 'qty', 'reverted'])
+        && data().keys().hasOnly(['type', 'at', 'userId', 'userName', 'reason', 'customer', 'note', 'unitIds', 'items', 'qty', 'reverted', 'photos'])
+        && (!('photos' in data()) || (data().photos is int && data().photos >= 1 && data().photos <= 50))
         && data().userId == request.auth.uid
         && data().userName == get(userPath()).data.name
         && data().type == 'saida' && data().reverted == false
@@ -106,6 +107,21 @@ service cloud.firestore {
         && getAfter(docPath('units', data().unitIds[data().qty - 1])).data.outMovementId == id
       );
       allow update, delete: if isAdmin();
+    }
+
+    // Fotos do IMEI (comprovante da saída): só nas próprias saídas, JPEG e com tamanho limitado
+    match /photos/{id} {
+      allow read: if isAdmin() || (active() && resource.data.userId == request.auth.uid);
+      allow create: if active()
+        && data().keys().hasOnly(['movementId', 'userId', 'userName', 'imei', 'image', 'at'])
+        && data().userId == request.auth.uid
+        && data().userName == get(userPath()).data.name
+        && text(data().imei, 20) && text(data().movementId, 64)
+        && data().image is string && data().image.size() <= 450000
+        && data().image.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')
+        && exists(docPath('movements', data().movementId))
+        && get(docPath('movements', data().movementId)).data.userId == request.auth.uid;
+      allow delete: if isAdmin();
     }
 
     // Auditoria: só quem tem cadastro registra as próprias ações (com o próprio nome); só o admin lê

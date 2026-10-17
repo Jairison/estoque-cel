@@ -6,7 +6,9 @@ const state = {
   order: new Map(), // chave "modelo|GB|cor|condição" → { model, storage, color, condition, qty }
 };
 const keyOf = (g) => [g.model, g.storage, g.color, g.condition].join('|');
-const inOrder = (g) => state.order.get(keyOf(g))?.qty || 0;
+// Itens do pedido: por modelo (chave = grupo) ou aparelho exato escaneado (chave = "imei:<IMEI>", com foto)
+const scannedIn = (g) => [...state.order.values()].filter((i) => i.imei && keyOf(i) === keyOf(g)).length;
+const inOrder = (g) => (state.order.get(keyOf(g))?.qty || 0) + scannedIn(g);
 const orderTotal = () => [...state.order.values()].reduce((s, i) => s + i.qty, 0);
 
 hydrateIcons();
@@ -37,6 +39,25 @@ $('#viewSeg').addEventListener('click', (e) => {
 });
 $('#orderFab').addEventListener('click', () => $('#orderCard').scrollIntoView({ behavior: 'smooth', block: 'start' }));
 $('#clearOrder').addEventListener('click', () => { state.order.clear(); renderOrder(); renderStock(); });
+$('#scanBtn').addEventListener('click', async () => {
+  const r = await openImeiScanner({ title: 'Escanear IMEI do aparelho' });
+  if (!r) return;
+  const k = `imei:${r.imei}`;
+  if (state.order.has(k)) return toast(`O IMEI ${r.imei} já está no pedido.`, 'error');
+  let u;
+  try { u = await api(`/api/stock/imei/${r.imei}`); } catch (err) { return toast(err.message, 'error'); }
+  const g = state.groups.find((x) => keyOf(x) === keyOf(u));
+  // Se o pedido já tinha esse modelo "por quantidade", o aparelho escaneado ocupa uma dessas vagas
+  const byModel = state.order.get(keyOf(u));
+  if (g && inOrder(g) >= g.qty) {
+    if (byModel && byModel.qty > 0) { byModel.qty--; if (!byModel.qty) state.order.delete(keyOf(u)); }
+    else return toast('Não há mais unidades disponíveis deste aparelho.', 'error');
+  }
+  state.order.set(k, { ...u, qty: 1, photo: r.photo });
+  toast(`${u.model} ${u.storage} ${u.color} (IMEI ${r.imei}) adicionado ao pedido com foto.`);
+  renderOrder();
+  renderStock();
+});
 
 // Ações dentro da lista de estoque
 $('#stock').addEventListener('click', (e) => {
@@ -66,8 +87,26 @@ $('#stock').addEventListener('click', (e) => {
   }
 });
 
+// Fotos do IMEI das minhas saídas
+$('#myMoves').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-photos]');
+  if (!b) return;
+  try { showPhotos(await api(`/api/movements/${b.dataset.photos}/photos`)); } catch (err) { toast(err.message, 'error'); }
+});
+function showPhotos(list) {
+  if (!list.length) return toast('Nenhuma foto encontrada para esta saída.', 'info');
+  const m = openModal({
+    size: 'lg', title: 'Fotos do IMEI', subtitle: plural(list.length, 'foto', 'fotos'),
+    body: `<div class="photo-grid">${list.map((p) => `<figure data-src="${p.id}"><img src="${p.image}" alt="IMEI ${esc(p.imei)}"><figcaption class="mono">${esc(fmtImei(p.imei) || 'IMEI não informado')}</figcaption></figure>`).join('')}</div>`,
+    foot: '<button class="btn btn-primary" data-close>Fechar</button>',
+  });
+  m.el.addEventListener('click', (e) => { const f = e.target.closest('figure'); if (f) openPhotoViewer(f.querySelector('img').src, f.querySelector('figcaption').textContent); });
+}
+
 // Ações dentro do pedido
 $('#orderItems').addEventListener('click', (e) => {
+  const img = e.target.closest('[data-view-photo]');
+  if (img) return openPhotoViewer(img.src, img.dataset.viewPhoto);
   const b = e.target.closest('[data-o]');
   if (!b) return;
   const item = state.order.get(b.dataset.key);
@@ -76,7 +115,7 @@ $('#orderItems').addEventListener('click', (e) => {
   if (b.dataset.o === 'rm') state.order.delete(b.dataset.key);
   if (b.dataset.o === 'minus') { item.qty--; if (item.qty <= 0) state.order.delete(b.dataset.key); }
   if (b.dataset.o === 'plus') {
-    if (item.qty >= (g?.qty || 0)) return toast(`Só há ${g?.qty || 0} unidade(s) disponível(is) deste aparelho.`, 'error');
+    if (!g || inOrder(g) >= g.qty) return toast(`Só há ${g?.qty || 0} unidade(s) disponível(is) deste aparelho.`, 'error');
     item.qty++;
   }
   renderOrder();
@@ -87,20 +126,23 @@ $('#orderForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!state.order.size) return;
   const f = Object.fromEntries(new FormData(e.target));
-  const items = [...state.order.values()].map(({ model, storage, color, condition, qty }) => ({ model, storage, color, condition, qty }));
+  const entries = [...state.order.values()];
+  const items = entries.map(({ model, storage, color, condition, qty, imei }) => (imei ? { imei } : { model, storage, color, condition, qty }));
+  const photos = entries.filter((i) => i.imei && i.photo).map((i) => ({ imei: i.imei, image: i.photo }));
   const total = orderTotal();
   const ok = await confirmDialog({
     title: `Confirmar saída de ${plural(total, 'aparelho', 'aparelhos')}?`,
-    message: `${items.map((i) => `${i.qty}× <b>${esc(i.model)} ${esc(i.storage)}</b> ${esc(i.color)}`).join('<br>')}${f.customer ? `<br><br>Cliente: <b>${esc(f.customer)}</b>` : ''}`,
+    message: `${entries.map((i) => `${i.qty}× <b>${esc(i.model)} ${esc(i.storage)}</b> ${esc(i.color)}${i.imei ? ` <span class="mono">· IMEI ${esc(i.imei)}</span>` : ''}`).join('<br>')}${photos.length ? `<br><br>${icon('camera')} ${plural(photos.length, 'foto anexada', 'fotos anexadas')} como comprovante` : ''}${f.customer ? `<br><br>Cliente: <b>${esc(f.customer)}</b>` : ''}`,
     confirmText: 'Confirmar saída', iconName: 'out',
   });
   if (!ok) return;
   try {
-    const r = await withLoading($('#confirmBtn'), () => api('/api/stock/out', { method: 'POST', body: { items, reason: f.reason, customer: f.customer, note: f.note } }));
+    const r = await withLoading($('#confirmBtn'), () => api('/api/stock/out', { method: 'POST', body: { items, photos, reason: f.reason, customer: f.customer, note: f.note } }));
     state.order.clear();
     e.target.reset();
     $('#o-reason').value = 'Venda';
     showReceipt(r.movement);
+    if (r.photoError) toast(r.photoError, 'error');
     afterOut();
   } catch (err) { toast(err.message, 'error'); load(); }
 });
@@ -109,9 +151,8 @@ function addToOrder(g, qty) {
   if (!g) return;
   const k = keyOf(g);
   const cur = state.order.get(k)?.qty || 0;
-  const can = g.qty - cur;
-  if (can <= 0) return toast('Todas as unidades deste aparelho já estão no pedido.', 'error');
-  const add = Math.min(qty, can);
+  const add = Math.min(qty, g.qty - inOrder(g));
+  if (add <= 0) return toast('Todas as unidades deste aparelho já estão no pedido.', 'error');
   state.order.set(k, { model: g.model, storage: g.storage, color: g.color, condition: g.condition, qty: cur + add });
   if (matchMedia('(max-width: 1180px)').matches) toast(`${add}× ${g.model} ${g.storage} adicionado ao pedido.`, 'info');
   renderOrder();
@@ -129,7 +170,7 @@ function showReceipt(m) {
     subtitle: `${fmtDateTime(m.at)} · ${esc(m.reason)}${m.customer ? ` · ${esc(m.customer)}` : ''}`,
     body: `
       <div class="confirm-ico" style="background:var(--green-soft);color:var(--green)">${icon('check')}</div>
-      <p class="text-2" style="margin-bottom:14px">Separe os aparelhos abaixo para o pedido:</p>
+      <p class="text-2" style="margin-bottom:14px">Separe os aparelhos abaixo para o pedido:${m.photos ? ` <span class="photo-chip">${icon('camera')}${plural(m.photos, 'foto do IMEI salva', 'fotos do IMEI salvas')}</span>` : ''}</p>
       <div class="list" style="margin:0 -24px;border-top:1px solid var(--border)">
         ${Object.values(g).map((i) => `<div class="list-item">
           <div class="phone-ico">${icon('phone')}</div>
@@ -156,9 +197,14 @@ async function load() {
     state.myMoves = moves;
     // Ajusta o pedido se o estoque mudou (outro colaborador deu saída, por exemplo)
     for (const [k, item] of state.order) {
-      const g = state.groups.find((x) => keyOf(x) === k);
-      if (!g) { state.order.delete(k); toast(`${item.model} ${item.storage} ${item.color} acabou e saiu do pedido.`, 'error'); }
-      else if (item.qty > g.qty) { item.qty = g.qty; toast(`${item.model} ${item.storage}: só restam ${g.qty} unidade(s).`, 'error'); }
+      const g = state.groups.find((x) => keyOf(x) === keyOf(item));
+      if (!g) { state.order.delete(k); toast(`${item.model} ${item.storage} ${item.color} acabou e saiu do pedido.`, 'error'); continue; }
+      if (item.imei) continue; // aparelho escaneado: a confirmação final checa se ainda está disponível
+      const max = g.qty - scannedIn(g);
+      if (item.qty > max) {
+        if (max <= 0) state.order.delete(k); else item.qty = max;
+        toast(`${item.model} ${item.storage}: só restam ${g.qty} unidade(s).`, 'error');
+      }
     }
     render();
   } catch (err) { toast(err.message, 'error'); }
@@ -290,13 +336,14 @@ function renderOrder() {
   $('#confirmBtn').innerHTML = `${icon('out')}${total ? `Confirmar saída · ${plural(total, 'aparelho', 'aparelhos')}` : 'Confirmar saída'}`;
   $('#orderItems').innerHTML = items.length ? `<div class="list">${items.map(([k, i]) => `
     <div class="list-item">
-      <div class="phone-ico">${icon('phone')}</div>
-      <div class="grow"><strong title="${esc(i.model)}">${esc(i.model)}</strong><small><b class="text-2">${esc(i.storage)}</b> · ${esc(i.color)} · ${esc(i.condition)}</small></div>
+      ${i.photo ? `<img class="photo-thumb" src="${i.photo}" alt="Foto do IMEI" data-view-photo="IMEI ${esc(i.imei)}">` : `<div class="phone-ico">${icon('phone')}</div>`}
+      <div class="grow"><strong title="${esc(i.model)}">${esc(i.model)}</strong><small><b class="text-2">${esc(i.storage)}</b> · ${esc(i.color)} · ${esc(i.condition)}${i.imei ? `<br><span class="mono">IMEI ${esc(fmtImei(i.imei))}</span>` : ''}</small></div>
+      ${i.imei ? `<span class="photo-chip" title="Aparelho exato, lido pela câmera">${icon('camera')}1×</span>` : `
       <div class="qty-ctl sm">
         <button type="button" data-o="minus" data-key="${esc(k)}" aria-label="Diminuir">${icon('minus')}</button>
         <span class="qty-val">${i.qty}</span>
         <button type="button" data-o="plus" data-key="${esc(k)}" aria-label="Aumentar">${icon('plus')}</button>
-      </div>
+      </div>`}
       <button class="btn btn-ghost btn-icon btn-sm" data-o="rm" data-key="${esc(k)}" title="Remover" aria-label="Remover">${icon('trash')}</button>
     </div>`).join('')}</div>`
     : `<div class="empty" style="padding:30px 20px"><div class="empty-ico">${icon('box')}</div><h4>Pedido vazio</h4><p>Use “Adicionar” na lista do estoque.</p></div>`;
@@ -312,6 +359,7 @@ function renderMoves() {
     return `<div class="list-item">
       <div class="mv-ico ${m.reverted ? 'estorno' : 'saida'}">${icon(m.reverted ? 'undo' : 'out')}</div>
       <div class="grow"><strong title="${esc(label)}">${esc(label)}</strong><small>${esc(m.reason)}${m.customer ? ` · ${esc(m.customer)}` : ''} · ${fmtRelative(m.at)}</small></div>
+      ${m.photos ? `<button class="btn btn-ghost btn-sm" data-photos="${esc(m.id)}" title="Ver fotos do IMEI">${icon('camera')}${m.photos}</button>` : ''}
       ${m.reverted ? '<span class="badge violet">Estornada</span>' : ''}
     </div>`;
   }).join('') : `<div class="empty" style="padding:36px 20px"><div class="empty-ico">${icon('clock')}</div><h4>Sem saídas ainda</h4><p>Suas saídas aparecerão aqui.</p></div>`;

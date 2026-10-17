@@ -75,6 +75,16 @@ const newJoinCode = () => {
   return Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => abc[b % abc.length]).join('');
 };
 const randomPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(36)).join('').slice(0, 24) + 'Aa1!';
+const MAX_PHOTO_CHARS = 440000;
+function readPhotos(list) {
+  if (list == null) return [];
+  if (!Array.isArray(list) || list.length > 50) bad('Fotos inválidas.');
+  return list.map((p) => {
+    const image = String(p?.image || '');
+    if (!image.startsWith('data:image/jpeg;base64,') || image.length > MAX_PHOTO_CHARS) bad('Foto inválida ou grande demais.');
+    return { imei: normImei(p.imei), image };
+  });
+}
 const describeItems = (items) => {
   const g = {};
   for (const i of items) { const k = `${i.model} ${i.storage} ${i.color}`; g[k] = (g[k] || 0) + 1; }
@@ -446,6 +456,7 @@ route('POST', '/api/stock/out', 'any', async ({ s, body }) => {
   const reason = str(body.reason, 40) || 'Venda';
   if (!REASONS.includes(reason)) bad('Motivo de saída inválido.');
   const customer = str(body.customer, 80), note = str(body.note, 300);
+  const photos = readPhotos(body.photos);
   const units = await unitsMap(s);
   let chosen;
   if (isAdmin(s) && Array.isArray(body.unitIds) && body.unitIds.length) {
@@ -454,7 +465,8 @@ route('POST', '/api/stock/out', 'any', async ({ s, body }) => {
     const out = chosen.find((u) => u.status === 'saida');
     if (out) bad(`O aparelho ${out.model} ${out.storage} já saiu do estoque.`);
   } else {
-    const specs = Array.isArray(body.items) && body.items.length ? body.items : [body];
+    const raw = Array.isArray(body.items) && body.items.length ? body.items : [body];
+    const specs = [...raw.filter((x) => normImei(x?.imei)), ...raw.filter((x) => !normImei(x?.imei))];
     if (specs.length > 50) bad('O pedido tem itens demais (máximo 50).');
     const taken = new Set();
     chosen = [];
@@ -466,6 +478,7 @@ route('POST', '/api/stock/out', 'any', async ({ s, body }) => {
     type: 'saida', at, userId: s.me.id, userName: s.me.name, reason, customer, note,
     unitIds: chosen.map((u) => u.id), items: chosen.map(snap), qty: chosen.length, reverted: false,
   };
+  if (photos.length) mv.photos = photos.length;
   if (isAdmin(s)) {
     const prices = await pricesMap(s);
     mv.items = mv.items.map((it) => ({ ...it, ...priceOf(prices, it) }));
@@ -482,8 +495,32 @@ route('POST', '/api/stock/out', 'any', async ({ s, body }) => {
     refs.forEach((r) => tx.update(r, { status: 'saida', outAt: at, outMovementId: mvRef.id, updatedAt: at }));
     tx.set(mvRef, mv);
   }).catch((e) => { throw fbErr(e); });
-  await addLog(s, s.me, 'Saída', `${reason}: ${describeItems(mv.items)}${customer ? ` — cliente ${customer}` : ''}`);
-  return { movement: { id: mvRef.id, ...mv } };
+  // Fotos do IMEI (comprovante), gravadas depois da saída confirmada
+  let photoError = '';
+  if (photos.length) {
+    try {
+      const batch = writeBatch(s.db);
+      for (const p of photos) batch.set(doc(collection(s.db, 'photos')), { movementId: mvRef.id, userId: s.me.id, userName: s.me.name, imei: p.imei, image: p.image, at });
+      await batch.commit();
+    } catch (e) { console.error(e); photoError = 'A saída foi registrada, mas a foto não pôde ser salva.'; }
+  }
+  await addLog(s, s.me, 'Saída', `${reason}: ${describeItems(mv.items)}${customer ? ` — cliente ${customer}` : ''}${photos.length ? ` — ${photos.length} foto(s) do IMEI` : ''}`);
+  return { movement: { id: mvRef.id, ...mv }, photoError };
+});
+
+route('GET', '/api/stock/imei/:imei', 'any', async ({ s, params }) => {
+  const imei = normImei(params.imei);
+  const u = [...(await unitsMap(s)).values()].find((x) => x.imei === imei && x.status !== 'saida');
+  if (!u) throw new ApiError(404, `Nenhum aparelho disponível no estoque com o IMEI ${imei}.`);
+  if (u.status !== 'disponivel') bad(`O aparelho de IMEI ${imei} está ${STATUS_LABEL[u.status]} e não pode sair.`);
+  return { id: u.id, model: u.model, storage: u.storage, color: u.color, condition: u.condition, imei: u.imei };
+});
+
+route('GET', '/api/movements/:id/photos', 'any', async ({ s, params }) => {
+  const q = isAdmin(s)
+    ? query(collection(s.db, 'photos'), where('movementId', '==', params.id))
+    : query(collection(s.db, 'photos'), where('movementId', '==', params.id), where('userId', '==', s.me.id));
+  return (await wrap(getDocs(q))).docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.at.localeCompare(b.at));
 });
 
 route('GET', '/api/my/movements', 'any', async ({ s }) => {

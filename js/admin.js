@@ -598,7 +598,10 @@ function openUnitForm(u, after) {
     size: 'lg', title: 'Editar aparelho', subtitle: `Cadastrado em ${fmtDateTime(u.createdAt)} por ${esc(u.createdBy || '—')}`,
     body: `<form class="form-grid" data-form>
       ${unitFormFields(u)}
-      <div class="field span-2"><label>IMEI</label><input class="input mono" name="imei" inputmode="numeric" maxlength="20" placeholder="15 dígitos" value="${esc(u.imei)}"></div>
+      <div class="field span-2"><label>IMEI</label>
+        <div class="imei-row"><input class="input mono" name="imei" inputmode="numeric" maxlength="20" placeholder="15 dígitos" value="${esc(u.imei)}">
+          <button type="button" class="btn" data-cam-edit>${icon('camera')}Câmera</button></div>
+        <div data-edit-photo></div></div>
       ${u.status !== 'saida' ? `<div class="field span-2"><label>Status</label><select class="select" name="status">
         ${['disponivel', 'reservado', 'manutencao'].map((s) => `<option value="${s}" ${s === u.status ? 'selected' : ''}>${STATUS[s].label}</option>`).join('')}</select></div>` : ''}
       <div class="field span-all"><label>Observação</label><textarea class="textarea" name="note" maxlength="300" placeholder="Detalhes, avarias, acessórios…">${esc(u.note || '')}</textarea></div>
@@ -606,8 +609,18 @@ function openUnitForm(u, after) {
     </form>`,
     foot: `<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>${icon('check')}Salvar alterações</button>`,
   });
+  let editPhoto = null;
+  m.$('[data-cam-edit]').addEventListener('click', async () => {
+    const r = await openImeiScanner({ title: `IMEI do ${u.model} ${u.storage}` });
+    if (!r) return;
+    m.$('[name=imei]').value = r.imei;
+    editPhoto = r.photo;
+    m.$('[data-edit-photo]').innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-top:8px"><img class="photo-thumb" src="${r.photo}" alt="Foto do IMEI"><span class="photo-chip">${icon('camera')}Foto salva junto ao salvar</span></div>`;
+    m.$('[data-edit-photo] img').addEventListener('click', (e) => openPhotoViewer(e.target.src, `IMEI ${r.imei}`));
+  });
   const save = async () => {
     const body = Object.fromEntries(new FormData(m.$('[data-form]')));
+    if (editPhoto) body.photo = { imei: body.imei.replace(/\D/g, ''), image: editPhoto };
     try {
       const updated = await withLoading(m.$('[data-save]'), () => api(`/api/units/${u.id}`, { method: 'PUT', body }));
       Object.assign(u, updated);
@@ -624,7 +637,7 @@ function openUnitDetails(u) {
   const history = S.movements.filter((mv) => mv.unitIds?.includes(u.id)).sort((a, b) => a.at.localeCompare(b.at));
   const st = STATUS[u.status] || STATUS.disponivel;
   const row = (k, v) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--border)"><span class="muted">${k}</span><span style="text-align:right">${v}</span></div>`;
-  openModal({
+  const md = openModal({
     size: 'lg', title: `${u.model} · ${u.storage}`, subtitle: `${esc(u.color)} · ${esc(u.condition)}`,
     body: `
       <div class="grid-2-even" style="margin-bottom:0">
@@ -645,10 +658,21 @@ function openUnitDetails(u) {
           ${u.note ? row('Observação', esc(u.note)) : ''}
         </div>
       </div>
+      ${u.imei ? `<div class="label" style="margin:22px 0 10px">${icon('camera')} Fotos do IMEI</div><div class="photo-grid" data-unit-photos><div class="skeleton" style="height:110px"></div></div>` : ''}
       <div class="label" style="margin:22px 0 4px">Histórico do aparelho</div>
       <div class="list" style="margin:0 -22px">${history.length ? history.map(mvListItem).join('') : '<p class="muted" style="padding:12px 22px">Sem movimentações registradas.</p>'}</div>`,
     foot: `<button class="btn" data-close>Fechar</button>`,
   });
+  const grid = md.$('[data-unit-photos]');
+  if (grid) {
+    const KIND = { entrada: 'Entrada', saida: 'Saída', edicao: 'Cadastro do IMEI' };
+    api(`/api/units/${u.id}/photos`).then((list) => {
+      grid.innerHTML = list.length
+        ? list.map((p) => `<figure><img src="${p.image}" alt="IMEI ${esc(p.imei)}"><figcaption>${KIND[p.kind] || 'Foto'} · ${fmtDate(p.at)}</figcaption></figure>`).join('')
+        : '<p class="muted">Nenhuma foto deste aparelho ainda.</p>';
+    }).catch((err) => { grid.innerHTML = `<p class="muted">${esc(err.message)}</p>`; });
+    grid.addEventListener('click', (e) => { const f = e.target.closest('figure'); if (f) openPhotoViewer(f.querySelector('img').src, `IMEI ${u.imei} · ${f.querySelector('figcaption').textContent}`); });
+  }
 }
 
 function openAdminOut(units, after) {
@@ -730,9 +754,13 @@ async function viewEntrada() {
         </div>
         <div class="card-body">
           <div data-imei-box class="field">
-            <label>IMEIs <span class="muted">(um por linha — use o leitor de código de barras)</span></label>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+              <label>IMEIs <span class="muted">(um por linha — câmera, leitor de código de barras ou digitação)</span></label>
+              <button type="button" class="btn btn-sm btn-primary" data-cam-entry>${icon('camera')}Escanear pela câmera</button>
+            </div>
             <textarea class="textarea mono" name="imeis" rows="6" placeholder="356789012345678&#10;356789012345679"></textarea>
             <div class="imei-status" data-imei-status></div>
+            <div class="photo-strip" data-entry-photos></div>
           </div>
           <div data-qty-box class="field hidden" style="max-width:220px">
             <label>Quantidade</label>
@@ -754,6 +782,42 @@ async function viewEntrada() {
 
   const form = $('[data-form]', root);
   let mode = 'imei';
+  const entryPhotos = new Map(); // IMEI → foto tirada na leitura pela câmera
+
+  // Miniaturas das fotos (só dos IMEIs que continuam na lista)
+  const renderEntryPhotos = () => {
+    const listed = new Set(parseImeis());
+    for (const k of entryPhotos.keys()) if (!listed.has(k)) entryPhotos.delete(k);
+    $('[data-entry-photos]', root).innerHTML = [...entryPhotos].map(([imei, photo]) => `
+      <figure data-imei="${esc(imei)}"><img src="${photo}" alt="IMEI ${esc(imei)}" title="IMEI ${esc(imei)}">
+        <figcaption>${esc(imei.slice(-4))}</figcaption>
+        <button type="button" data-rm-photo title="Remover foto" aria-label="Remover foto">${icon('x')}</button></figure>`).join('');
+  };
+  $('[data-entry-photos]', root).addEventListener('click', (e) => {
+    const fig = e.target.closest('figure');
+    if (!fig) return;
+    if (e.target.closest('[data-rm-photo]')) { entryPhotos.delete(fig.dataset.imei); renderEntryPhotos(); return; }
+    openPhotoViewer(fig.querySelector('img').src, `IMEI ${fig.dataset.imei}`);
+  });
+  $('[data-cam-entry]', root).addEventListener('click', async () => {
+    let added = 0;
+    await openImeiScanner({
+      title: 'Escanear IMEIs da entrada',
+      continuous: true,
+      onScan: ({ imei, photo }) => {
+        if (parseImeis().includes(imei)) return `O IMEI ${imei} já está na lista.`;
+        if (S.units.some((u) => u.imei === imei && u.status !== 'saida')) return `O IMEI ${imei} já está cadastrado no estoque.`;
+        const cur = form.imeis.value.replace(/\s+$/, '');
+        form.imeis.value = (cur ? `${cur}\n` : '') + imei;
+        entryPhotos.set(imei, photo);
+        added++;
+        updateSummary();
+        return '';
+      },
+    });
+    renderEntryPhotos();
+    if (added) toast(`${plural(added, 'IMEI lido', 'IMEIs lidos')} pela câmera, com foto.`);
+  });
 
   const parseImeis = () => form.imeis.value.split(/[\s,;]+/).map((s) => s.replace(/\D/g, '')).filter(Boolean);
   const analyze = () => {
@@ -794,7 +858,7 @@ async function viewEntrada() {
     return { a, qty };
   };
 
-  root.addEventListener('input', updateSummary);
+  root.addEventListener('input', (e) => { updateSummary(); if (e.target === form.imeis) renderEntryPhotos(); });
   root.addEventListener('change', updateSummary);
   form.addEventListener('reset', () => setTimeout(updateSummary));
   $('[data-mode-seg]', root).addEventListener('click', (e) => {
@@ -820,13 +884,17 @@ async function viewEntrada() {
       const ok = await confirmDialog({ title: 'Preço abaixo do custo', message: 'O preço de venda está menor que o custo. Deseja continuar mesmo assim?', confirmText: 'Continuar' });
       if (!ok) return;
     }
-    const body = { ...fd, imeis: mode === 'imei' ? a.valid : [], qty: mode === 'qty' ? qty : undefined };
+    const photos = mode === 'imei' ? a.valid.filter((i) => entryPhotos.has(i)).map((i) => ({ imei: i, image: entryPhotos.get(i) })) : [];
+    const body = { ...fd, imeis: mode === 'imei' ? a.valid : [], qty: mode === 'qty' ? qty : undefined, photos };
     try {
       const r = await withLoading($('[data-submit]', root), () => api('/api/units', { method: 'POST', body }));
       S.units.push(...r.units);
       S.movements.unshift(r.movement);
-      toast(`${plural(r.units.length, 'aparelho cadastrado', 'aparelhos cadastrados')}: ${fd.model} ${fd.storage}`);
+      toast(`${plural(r.units.length, 'aparelho cadastrado', 'aparelhos cadastrados')}: ${fd.model} ${fd.storage}${photos.length ? ` · ${plural(photos.length, 'foto salva', 'fotos salvas')}` : ''}`);
+      if (r.photoError) toast(r.photoError, 'error');
       form.imeis.value = '';
+      entryPhotos.clear();
+      renderEntryPhotos();
       form.qty.value = 1;
       updateSummary();
       refreshLowBadge();

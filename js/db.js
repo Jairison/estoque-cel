@@ -85,6 +85,21 @@ function readPhotos(list) {
     return { imei: normImei(p.imei), image };
   });
 }
+// Grava as fotos do IMEI (kind: entrada | saida | edicao), ligadas ao aparelho e à movimentação
+async function savePhotos(s, photos, { movementId = '', kind, unitByImei = new Map() }) {
+  if (!photos.length) return '';
+  try {
+    const at = now();
+    const batch = writeBatch(s.db);
+    for (const p of photos) {
+      batch.set(doc(collection(s.db, 'photos')), {
+        movementId, kind, unitId: unitByImei.get(p.imei) || '', userId: s.me.id, userName: s.me.name, imei: p.imei, image: p.image, at,
+      });
+    }
+    await batch.commit();
+    return '';
+  } catch (e) { console.error(e); return 'Os dados foram salvos, mas a foto do IMEI não pôde ser salva.'; }
+}
 const describeItems = (items) => {
   const g = {};
   for (const i of items) { const k = `${i.model} ${i.storage} ${i.color}`; g[k] = (g[k] || 0) + 1; }
@@ -496,14 +511,7 @@ route('POST', '/api/stock/out', 'any', async ({ s, body }) => {
     tx.set(mvRef, mv);
   }).catch((e) => { throw fbErr(e); });
   // Fotos do IMEI (comprovante), gravadas depois da saída confirmada
-  let photoError = '';
-  if (photos.length) {
-    try {
-      const batch = writeBatch(s.db);
-      for (const p of photos) batch.set(doc(collection(s.db, 'photos')), { movementId: mvRef.id, userId: s.me.id, userName: s.me.name, imei: p.imei, image: p.image, at });
-      await batch.commit();
-    } catch (e) { console.error(e); photoError = 'A saída foi registrada, mas a foto não pôde ser salva.'; }
-  }
+  const photoError = await savePhotos(s, photos, { movementId: mvRef.id, kind: 'saida', unitByImei: new Map(chosen.filter((u) => u.imei).map((u) => [u.imei, u.id])) });
   await addLog(s, s.me, 'Saída', `${reason}: ${describeItems(mv.items)}${customer ? ` — cliente ${customer}` : ''}${photos.length ? ` — ${photos.length} foto(s) do IMEI` : ''}`);
   return { movement: { id: mvRef.id, ...mv }, photoError };
 });
@@ -514,6 +522,15 @@ route('GET', '/api/stock/imei/:imei', 'any', async ({ s, params }) => {
   if (!u) throw new ApiError(404, `Nenhum aparelho disponível no estoque com o IMEI ${imei}.`);
   if (u.status !== 'disponivel') bad(`O aparelho de IMEI ${imei} está ${STATUS_LABEL[u.status]} e não pode sair.`);
   return { id: u.id, model: u.model, storage: u.storage, color: u.color, condition: u.condition, imei: u.imei };
+});
+
+route('GET', '/api/units/:id/photos', 'admin', async ({ s, params }) => {
+  const u = (await unitsMap(s)).get(params.id);
+  const queries = [getDocs(query(collection(s.db, 'photos'), where('unitId', '==', params.id)))];
+  if (u?.imei) queries.push(getDocs(query(collection(s.db, 'photos'), where('imei', '==', u.imei))));
+  const all = new Map();
+  for (const snapQ of await wrap(Promise.all(queries))) for (const d of snapQ.docs) all.set(d.id, { id: d.id, ...d.data() });
+  return [...all.values()].sort((a, b) => a.at.localeCompare(b.at));
 });
 
 route('GET', '/api/movements/:id/photos', 'any', async ({ s, params }) => {
@@ -537,6 +554,7 @@ route('GET', '/api/units', 'admin', async ({ s }) => {
 
 route('POST', '/api/units', 'admin', async ({ s, body }) => {
   const { pub, priv } = readUnitFields(body);
+  const photos = readPhotos(body.photos);
   const units = await unitsMap(s);
   const raw = (Array.isArray(body.imeis) ? body.imeis : []).map(normImei).filter(Boolean);
   const imeis = [...new Set(raw)];
@@ -562,10 +580,13 @@ route('POST', '/api/units', 'admin', async ({ s, body }) => {
     unitIds: created.map((u) => u.id), items: created.map((u) => ({ ...snap(u), cost: priv.cost, price: priv.price })), qty,
     value: round2(priv.cost * qty), cost: round2(priv.cost * qty), reverted: false,
   };
+  const entryPhotos = photos.filter((p) => imeis.includes(p.imei));
+  if (entryPhotos.length) mv.photos = entryPhotos.length;
   batch.set(mvRef, mv);
   batch.set(logRef(s), logData(s.me, 'Entrada', `${describeItems(mv.items)}${priv.supplier ? ` — fornecedor ${priv.supplier}` : ''}`));
   await wrap(batch.commit());
-  return { units: created, movement: { id: mvRef.id, ...mv } };
+  const photoError = await savePhotos(s, entryPhotos, { movementId: mvRef.id, kind: 'entrada', unitByImei: new Map(created.map((u) => [u.imei, u.id])) });
+  return { units: created, movement: { id: mvRef.id, ...mv }, photoError };
 });
 
 route('PUT', '/api/units/:id', 'admin', async ({ s, params, body }) => {
@@ -590,6 +611,8 @@ route('PUT', '/api/units/:id', 'admin', async ({ s, params, body }) => {
   const after = { ...u, ...pub };
   batch.set(logRef(s), logData(s.me, 'Edição', `Editou ${after.model} ${after.storage} ${after.color}${after.imei ? ` (IMEI ${after.imei})` : ''}`));
   await wrap(batch.commit());
+  const [photo] = body.photo && after.imei ? readPhotos([{ ...body.photo, imei: after.imei }]) : [];
+  if (photo) await savePhotos(s, [photo], { kind: 'edicao', unitByImei: new Map([[after.imei, u.id]]) });
   const prices = await pricesMap(s);
   return { ...after, ...(prices.get(u.id) || {}), ...priv, id: u.id };
 });

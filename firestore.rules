@@ -109,18 +109,25 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // Fotos do IMEI (comprovante da saída): só nas próprias saídas, JPEG e com tamanho limitado
+    // Fotos do IMEI (entrada, saída e cadastro do IMEI): JPEG com tamanho limitado.
+    // O admin registra em qualquer movimentação; o colaborador só nas próprias saídas.
     match /photos/{id} {
+      function validPhoto() {
+        return data().keys().hasOnly(['movementId', 'kind', 'unitId', 'userId', 'userName', 'imei', 'image', 'at'])
+          && data().userId == request.auth.uid
+          && data().kind in ['entrada', 'saida', 'edicao']
+          && text(data().imei, 20) && text(data().movementId, 64) && text(data().unitId, 64)
+          && data().image is string && data().image.size() <= 450000
+          && data().image.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+');
+      }
       allow read: if isAdmin() || (active() && resource.data.userId == request.auth.uid);
-      allow create: if active()
-        && data().keys().hasOnly(['movementId', 'userId', 'userName', 'imei', 'image', 'at'])
-        && data().userId == request.auth.uid
-        && data().userName == get(userPath()).data.name
-        && text(data().imei, 20) && text(data().movementId, 64)
-        && data().image is string && data().image.size() <= 450000
-        && data().image.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')
-        && exists(docPath('movements', data().movementId))
-        && get(docPath('movements', data().movementId)).data.userId == request.auth.uid;
+      allow create: if validPhoto() && (
+        isAdmin()
+        || (active() && data().kind == 'saida'
+          && data().userName == get(userPath()).data.name
+          && exists(docPath('movements', data().movementId))
+          && get(docPath('movements', data().movementId)).data.userId == request.auth.uid)
+      );
       allow delete: if isAdmin();
     }
 

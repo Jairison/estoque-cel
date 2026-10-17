@@ -96,12 +96,18 @@ function frameCanvas(src, w, h, band) {
   return c;
 }
 
-function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
+/* Modo contínuo (entrada de estoque): a câmera continua aberta e cada IMEI novo é entregue em onScan.
+ * onScan({ imei, photo }) pode devolver um texto de erro para recusar aquele IMEI (ex.: já cadastrado). */
+function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, onScan } = {}) {
   return new Promise((resolve) => {
-    let stream = null, timer = null, done = false, decoder = null, busy = false, tick = 0;
+    let stream = null, timer = null, done = false, decoder = null, busy = false, tick = 0, pauseUntil = 0;
+    const seen = new Set();
+    const results = [];
     const m = openModal({
       title,
-      subtitle: 'Aponte para o código de barras do IMEI (na caixa do iPhone ou na tela do *#06#).',
+      subtitle: continuous
+        ? 'Aponte para o código de barras do IMEI de cada aparelho, um de cada vez. A câmera continua aberta para o próximo.'
+        : 'Aponte para o código de barras do IMEI (na caixa do iPhone ou na tela do *#06#).',
       body: `
         <div class="scanner">
           <video playsinline muted autoplay data-video></video>
@@ -112,9 +118,12 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
           <button class="btn btn-primary" data-shot disabled>${icon('eye')}Tirar foto agora</button>
           <label class="btn">${icon('download')}Escolher foto<input type="file" accept="image/*" capture="environment" data-file hidden></label>
         </div>
-        <div data-result></div>`,
-      foot: `<button class="btn" data-close>Cancelar</button>`,
-      onClose: () => { stop(); if (!done) resolve(null); },
+        <div data-result></div>
+        ${continuous ? '<div class="scan-list" data-list></div>' : ''}`,
+      foot: continuous
+        ? `<span class="muted" data-count style="margin-right:auto">Nenhum IMEI lido ainda</span><button class="btn btn-primary" data-close>${icon('check')}Concluir</button>`
+        : `<button class="btn" data-close>Cancelar</button>`,
+      onClose: () => { stop(); if (!done) { done = true; resolve(continuous ? results : null); } },
     });
     const video = m.$('[data-video]');
     const status = (html, kind = '') => { const el = m.$('[data-status]'); el.className = `scanner-status ${kind}`; el.innerHTML = html; };
@@ -124,12 +133,27 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
       stream?.getTracks().forEach((t) => t.stop()); stream = null;
     }
     function finish(imei, photo) {
+      if (continuous) return accept(imei, photo);
       done = true;
       stop();
       navigator.vibrate?.(120);
       resolve({ imei, photo });
       m.close();
     }
+    // Modo contínuo: registra o IMEI e segue escaneando o próximo aparelho
+    function accept(imei, photo) {
+      if (seen.has(imei)) { status(`${icon('check')}IMEI ${imei} já foi lido. Aponte para o próximo aparelho.`, 'ok'); return; }
+      const error = onScan?.({ imei, photo });
+      if (error) { status(`${icon('alert')}${esc(error)}`, 'warn'); pauseUntil = Date.now() + 1500; return; }
+      seen.add(imei);
+      results.push({ imei, photo });
+      navigator.vibrate?.(120);
+      status(`${icon('check')}IMEI ${imei} adicionado. Aponte para o próximo aparelho.`, 'ok');
+      pauseUntil = Date.now() + 1200;
+      m.$('[data-count]').textContent = `${results.length} IMEI${results.length > 1 ? 's' : ''} lido${results.length > 1 ? 's' : ''}`;
+      m.$('[data-list]').insertAdjacentHTML('afterbegin', `<div class="scan-item"><img src="${photo}" alt=""><span class="mono">${esc(imei)}</span>${icon('check')}</div>`);
+    }
+    function resume() { m.$('[data-result]').innerHTML = ''; if (!stream) start(); else if (!timer) timer = setInterval(scanFrame, 350); }
 
     // Foto sem código legível: deixa usar a foto e digitar o IMEI
     function showFallback(photo) {
@@ -152,6 +176,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
         const imei = m.$('[data-manual]').value.replace(/\D/g, '');
         if (imei.length !== 15 || !imeiLuhnOk(imei)) return toast('IMEI inválido: confira os 15 dígitos.', 'error');
         finish(imei, photo);
+        if (continuous) resume();
       });
       m.$('[data-retry]').addEventListener('click', () => { m.$('[data-result]').innerHTML = ''; start(); });
     }
@@ -167,7 +192,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
     }
 
     async function scanFrame() {
-      if (busy || done || !video.videoWidth) return;
+      if (busy || done || !video.videoWidth || Date.now() < pauseUntil) return;
       busy = true;
       try {
         const w = video.videoWidth, h = video.videoHeight;
@@ -213,7 +238,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
       clearInterval(timer);
       status(`${icon('barcode')}Analisando a foto…`);
       const imei = await tryDecode(frameCanvas(video, w, h, false), w, h, video);
-      if (imei) finish(imei, photo); else showFallback(photo);
+      if (imei) { finish(imei, photo); if (continuous) resume(); } else showFallback(photo);
     });
 
     // Foto da galeria / câmera nativa (funciona mesmo sem câmera ao vivo)
@@ -230,7 +255,8 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera' } = {}) {
       const photo = makePhoto(img, w, h);
       const imei = decoder ? await tryDecode(frameCanvas(img, w, h, false), w, h, img) : '';
       URL.revokeObjectURL(img.src);
-      if (imei) finish(imei, photo); else showFallback(photo);
+      e.target.value = '';
+      if (imei) { finish(imei, photo); if (continuous) resume(); } else showFallback(photo);
     });
 
     start();

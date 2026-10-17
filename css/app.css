@@ -696,3 +696,14 @@ a.user-card:hover { border-color: var(--gold); background: var(--gold-soft); }
 .imei-row .input { flex: 1; }
 .photo-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--gold); }
 .photo-chip svg.i { width: 13px; height: 13px; }
+.scan-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; max-height: 190px; overflow: auto; }
+.scan-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 10px; background: var(--green-soft); color: var(--green); animation: viewIn .3s var(--ease); }
+.scan-item img { width: 40px; height: 30px; object-fit: cover; border-radius: 6px; }
+.scan-item .mono { flex: 1; color: var(--text); }
+.scan-item svg.i { width: 16px; height: 16px; }
+.photo-strip { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.photo-strip figure { position: relative; margin: 0; }
+.photo-strip figure img { width: 64px; height: 48px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border-strong); cursor: zoom-in; display: block; }
+.photo-strip figure figcaption { font-size: 10px; color: var(--muted); text-align: center; margin-top: 2px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.photo-strip figure button { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: var(--red); color: #fff; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.photo-strip figure button svg.i { width: 12px; height: 12px; }

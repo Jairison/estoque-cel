@@ -63,12 +63,58 @@ function ocrCanvas(src, w, h, band) {
   x.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
   return c;
 }
-async function ocrRead(canvas, psm = '6') {
-  const worker = await loadOcr();
-  if (worker.__psm !== psm) { await worker.setParameters({ tessedit_pageseg_mode: psm }); worker.__psm = psm; }
-  const { data } = await worker.recognize(canvas);
-  return imeiFromText(data.text);
+async function ocrParams(worker, psm, digitsOnly) {
+  const wl = digitsOnly ? '0123456789 ' : '';
+  if (worker.__psm !== psm || worker.__wl !== wl) {
+    await worker.setParameters({ tessedit_pageseg_mode: psm, tessedit_char_whitelist: wl });
+    worker.__psm = psm; worker.__wl = wl;
+  }
 }
+// Recorta e amplia uma linha de texto (para reler só os dígitos)
+function lineCanvas(src, bbox, toRightEdge) {
+  const h = Math.max(8, bbox.y1 - bbox.y0);
+  const x0 = Math.max(0, bbox.x0 - h), y0 = Math.max(0, bbox.y0 - h * 0.45);
+  const x1 = toRightEdge ? src.width : Math.min(src.width, bbox.x1 + h), y1 = Math.min(src.height, bbox.y1 + h * 0.45);
+  const scale = Math.max(1, Math.min(4, 52 / h));
+  const c = document.createElement('canvas');
+  c.width = Math.round((x1 - x0) * scale); c.height = Math.round((y1 - y0) * scale);
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.filter = 'grayscale(1) contrast(1.6)';
+  x.drawImage(src, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height);
+  return c;
+}
+// Lê o IMEI de uma imagem. Devolve { imei, near: [números de 15 dígitos duvidosos], text }
+async function ocrScan(canvas, psm = '6', deep = true) {
+  const worker = await loadOcr();
+  await ocrParams(worker, psm, false);
+  const { data } = await worker.recognize(canvas, {}, { text: true, blocks: deep });
+  const first = imeiCandidates(data.text);
+  const near = [...first.near];
+  if (first.valid[0]) return { imei: first.valid[0], near: [], text: data.text };
+  if (deep) {
+    const lines = (data.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => p.lines || []));
+    const targets = lines.filter((l) => (l.text.match(/\d/g) || []).length >= 8 || /IME|MEID/i.test(l.text)).slice(0, 6);
+    if (targets.length) {
+      await ocrParams(worker, '7', true);
+      try {
+        for (const l of targets) {
+          const labelOnly = (l.text.match(/\d/g) || []).length < 8; // "IMEI" à esquerda, número à direita
+          const crop = lineCanvas(canvas, l.bbox, labelOnly);
+          for (const c of [crop, binarize(lineCanvas(canvas, l.bbox, labelOnly))]) {
+            const { data: d2 } = await worker.recognize(c);
+            const cand = imeiCandidates(d2.text);
+            if (cand.valid[0]) return { imei: cand.valid[0], near: [], text: data.text };
+            for (const n of cand.near) if (!near.includes(n)) near.push(n);
+          }
+        }
+      } finally { await ocrParams(worker, psm, false); }
+    }
+  }
+  // remove "sugestões" que são o mesmo número deslocado em um dígito (ex.: o "I" de IMEI lido como 1)
+  const clean = near.filter((n, i) => !near.slice(0, i).some((o) => o.slice(1) === n.slice(0, 14) || n.slice(1) === o.slice(0, 14)));
+  return { imei: '', near: clean, text: data.text };
+}
+async function ocrRead(canvas, psm = '6') { return (await ocrScan(canvas, psm, false)).imei; }
 
 // ── Fotos em alta resolução (celular tira 12 MP): a etiqueta ocupa uma parte pequena da foto.
 // Analisamos a foto inteira em alta resolução e depois pedaços dela ("zoom" em cada região).
@@ -126,8 +172,9 @@ function* photoRegions(w, h) {
 // Extrai o IMEI do texto lido. Corrige trocas comuns do OCR (O→0, I→1, S→5, B→8…), junta grupos
 // separados por espaço ("35 201340 264948 4") e ignora EID, ICCID e outros números longos.
 const OCR_FIX = { O: '0', o: '0', Q: '0', D: '0', I: '1', l: '1', '|': '1', i: '1', '!': '1', S: '5', s: '5', B: '8', Z: '2', z: '2', G: '6', g: '9', q: '9' };
-function imeiFromText(text) {
-  const found = [];
+function imeiFromText(text) { return imeiCandidates(text).valid[0] || ''; }
+function imeiCandidates(text) {
+  const found = [], near = [];
   for (const raw of String(text || '').split(/\n/)) {
     const line = raw.replace(/(IMEI|MEID|IMEl|lMEI|1MEI|IME1|EID|SN|S\/N)\s*2?\s*[:#.]?/gi, ' ').replace(/[:;,()[\]]/g, ' ');
     const toks = line.split(/\s+/).filter(Boolean).map((t) => {
@@ -139,10 +186,13 @@ function imeiFromText(text) {
       if (!toks[i]) continue;
       let acc = '';
       for (let j = i; j < toks.length && toks[j]; j++) { acc += toks[j]; if (acc.length >= 15) break; }
-      if (acc.length === 15 && imeiLuhnOk(acc) && !found.includes(acc)) found.push(acc);
+      if (acc.length === 15) {
+        if (imeiLuhnOk(acc)) { if (!found.includes(acc)) found.push(acc); }
+        else if (!near.includes(acc)) near.push(acc);
+      }
     }
   }
-  return found[0] || '';
+  return { valid: found, near };
 }
 
 // IMEI válido: 15 dígitos com dígito verificador (Luhn)
@@ -223,6 +273,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
   return new Promise((resolve) => {
     let stream = null, timer = null, done = false, decoder = null, busy = false, tick = 0, pauseUntil = 0;
     let ocrTimer = null, ocrBusy = false, ocrReady = false, ocrLast = '';
+    let lastNear = [], lastText = ''; // diagnóstico da última foto analisada
     const seen = new Set();
     const results = [];
     const m = openModal({
@@ -292,14 +343,29 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
         <div class="scanner-fallback">
           <img src="${photo}" alt="Foto capturada">
           <div style="flex:1;min-width:200px">
+            ${lastNear.length ? `<div class="field" style="margin-bottom:10px"><label>Números parecidos com IMEI encontrados (toque para conferir)</label>
+              <div class="chips">${lastNear.slice(0, 4).map((n) => `<button type="button" class="chip" data-near="${n}">${n.replace(/^(\d{2})(\d{6})(\d{6})(\d)$/, '$1 $2 $3 $4')}</button>`).join('')}</div>
+              <span class="hint">Um dígito pode ter sido lido errado: compare com a foto e corrija antes de usar.</span></div>` : ''}
             <div class="field"><label>Digite o IMEI que aparece na foto</label>
-              <input class="input mono" data-manual inputmode="numeric" maxlength="20" placeholder="15 dígitos"></div>
+              <input class="input mono" data-manual inputmode="numeric" maxlength="20" placeholder="15 dígitos" value="${lastNear[0] || ''}"></div>
             <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
               <button class="btn btn-primary btn-sm" data-use>${icon('check')}Usar foto e IMEI</button>
               <button class="btn btn-sm" data-retry>${icon('refresh')}Tentar de novo</button>
             </div>
+            <details style="margin-top:12px"><summary class="muted" style="cursor:pointer;font-size:12px">O que o leitor enxergou na foto (diagnóstico)</summary>
+              <pre class="mono" data-diag style="white-space:pre-wrap;font-size:11px;max-height:160px;overflow:auto;background:var(--bg-2);padding:8px;border-radius:8px;margin-top:6px">${esc(lastText || '(nenhum texto reconhecido)')}</pre>
+              <button type="button" class="btn btn-ghost btn-sm" data-copy-diag>${icon('copy')}Copiar diagnóstico</button>
+            </details>
           </div>
         </div>`;
+      m.$('[data-result]').addEventListener('click', (e) => {
+        const n = e.target.closest('[data-near]');
+        if (n) { m.$('[data-manual]').value = n.dataset.near; m.$('[data-manual]').focus(); }
+        if (e.target.closest('[data-copy-diag]')) {
+          const txt = `Diagnóstico do leitor de IMEI\nNavegador: ${navigator.userAgent}\nTexto lido:\n${lastText}\nQuase IMEIs: ${lastNear.join(', ') || '-'}`;
+          navigator.clipboard?.writeText(txt).then(() => toast('Diagnóstico copiado.'), () => toast('Não foi possível copiar.', 'error'));
+        }
+      });
       m.$('[data-manual]').focus();
       m.$('[data-use]').addEventListener('click', () => {
         const imei = m.$('[data-manual]').value.replace(/\D/g, '');
@@ -332,6 +398,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
       })();
 
       // 2) Números (OCR, roda em segundo plano ao mesmo tempo): primeiro as tentativas leves, depois as pesadas
+      lastNear = []; lastText = '';
       const ocrTask = (async () => {
         const gray = 'grayscale(1) contrast(1.5)';
         const tw = w * 0.6, th = h * 0.6, cx = (w - tw) / 2, cy = (h - th) / 2;
@@ -348,8 +415,10 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
             if (stopped()) return '';
             status(`${icon('file')}Lendo os números do IMEI na foto… (etapa ${i + 1} de ${steps.length})`);
             await new Promise((r) => setTimeout(r, 30));
-            const imei = await ocrRead(steps[i](), '11');
-            if (imei) return imei;
+            const r = await ocrScan(steps[i](), '11', true);
+            if (r.imei) return r.imei;
+            for (const n of r.near) if (!lastNear.includes(n) && !lastNear.some((o) => o.slice(1) === n.slice(0, 14) || n.slice(1) === o.slice(0, 14))) lastNear.push(n);
+            if (!lastText && r.text.trim()) lastText = r.text.trim();
           }
         } catch (e) { console.warn(e); }
         return '';
@@ -374,7 +443,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
       ocrBusy = true;
       try {
         const w = video.videoWidth, h = video.videoHeight;
-        const imei = await ocrRead(ocrCanvas(video, w, h, true));
+        const imei = (await ocrScan(ocrCanvas(video, w, h, true), '6', true)).imei;
         if (done || Date.now() < pauseUntil) return;
         // modo contínuo: IMEI que já entrou na lista (ex.: lido antes pelo código de barras) não é "confirmado" de novo
         if (imei && seen.has(imei)) { status(`${icon('check')}IMEI ${imei} já foi lido. Aponte para o próximo aparelho.`, 'ok'); return; }

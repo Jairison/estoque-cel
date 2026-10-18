@@ -1,11 +1,15 @@
 /* Império Cell — leitor de IMEI pela câmera + foto como comprovante
- * openImeiScanner() abre a câmera traseira, lê o código de barras do IMEI (caixa do iPhone ou tela *#06#)
- * e devolve { imei, photo }. photo é um JPEG comprimido (data URL) para guardar junto com a saída.
- * Leitura: BarcodeDetector nativo (Android/Chrome) ou a biblioteca ZXing (iPhone e demais navegadores).
+ * openImeiScanner() abre a câmera traseira e lê o IMEI de duas formas, ao mesmo tempo:
+ *   1) código de barras (caixa do iPhone, tela *#06#): BarcodeDetector nativo ou ZXing;
+ *   2) números impressos/na tela, sem código de barras ("IMEI 35 201340 264948 4"): OCR com Tesseract.js.
+ * Em ambos os casos só aceita IMEI válido (15 dígitos + dígito verificador). Devolve { imei, photo, via }.
  */
 'use strict';
 
 const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.23.0/umd/index.min.js';
+const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+const TESSERACT_WORKER = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/worker.min.js';
+const TESSERACT_CORE = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@7.0.0';
 const PHOTO_MAX_SIDE = 960;
 const PHOTO_MAX_CHARS = 420000; // limite seguro por foto no banco de dados
 
@@ -22,6 +26,68 @@ function loadZxing() {
     });
   }
   return zxingLoading;
+}
+
+// ── Leitura dos números (OCR). Carregado só quando a câmera é aberta; o navegador guarda em cache.
+let ocrLoading = null;
+function loadOcr() {
+  if (!ocrLoading) {
+    ocrLoading = (async () => {
+      if (!window.Tesseract) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = TESSERACT_URL;
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('Não foi possível carregar o leitor de números.'));
+          document.head.append(s);
+        });
+      }
+      const worker = await window.Tesseract.createWorker('eng', 1, { workerPath: TESSERACT_WORKER, corePath: TESSERACT_CORE });
+      await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+      return worker;
+    })().catch((e) => { ocrLoading = null; throw e; });
+  }
+  return ocrLoading;
+}
+
+// Prepara a imagem para o OCR: tons de cinza, contraste e ampliação
+function ocrCanvas(src, w, h, band) {
+  const sx = 0, sw = w;
+  const sh = band ? Math.round(h * 0.5) : h, sy = band ? Math.round((h - sh) / 2) : 0;
+  const scale = Math.min(2, 1800 / sw);
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.filter = 'grayscale(1) contrast(1.6)';
+  x.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+async function ocrRead(canvas) {
+  const worker = await loadOcr();
+  const { data } = await worker.recognize(canvas);
+  return imeiFromText(data.text);
+}
+
+// Extrai o IMEI do texto lido. Corrige trocas comuns do OCR (O→0, I→1, S→5, B→8…), junta grupos
+// separados por espaço ("35 201340 264948 4") e ignora EID, ICCID e outros números longos.
+const OCR_FIX = { O: '0', o: '0', Q: '0', D: '0', I: '1', l: '1', '|': '1', i: '1', '!': '1', S: '5', s: '5', B: '8', Z: '2', z: '2', G: '6', g: '9', q: '9' };
+function imeiFromText(text) {
+  const found = [];
+  for (const raw of String(text || '').split(/\n/)) {
+    const line = raw.replace(/(IMEI|MEID|IMEl|lMEI|1MEI|IME1|EID|SN|S\/N)\s*2?\s*[:#.]?/gi, ' ').replace(/[:;,()[\]]/g, ' ');
+    const toks = line.split(/\s+/).filter(Boolean).map((t) => {
+      const real = t.replace(/\D/g, '').length;
+      const digits = [...t].map((c) => (/\d/.test(c) ? c : OCR_FIX[c] ?? '')).join('');
+      return real >= 1 && digits.length === t.length && t.length <= 15 ? digits : null;
+    });
+    for (let i = 0; i < toks.length; i++) {
+      if (!toks[i]) continue;
+      let acc = '';
+      for (let j = i; j < toks.length && toks[j]; j++) { acc += toks[j]; if (acc.length >= 15) break; }
+      if (acc.length === 15 && imeiLuhnOk(acc) && !found.includes(acc)) found.push(acc);
+    }
+  }
+  return found[0] || '';
 }
 
 // IMEI válido: 15 dígitos com dígito verificador (Luhn)
@@ -101,18 +167,20 @@ function frameCanvas(src, w, h, band) {
 function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, onScan } = {}) {
   return new Promise((resolve) => {
     let stream = null, timer = null, done = false, decoder = null, busy = false, tick = 0, pauseUntil = 0;
+    let ocrTimer = null, ocrBusy = false, ocrReady = false, ocrLast = '';
     const seen = new Set();
     const results = [];
     const m = openModal({
       title,
       subtitle: continuous
-        ? 'Aponte para o código de barras do IMEI de cada aparelho, um de cada vez. A câmera continua aberta para o próximo.'
-        : 'Aponte para o código de barras do IMEI (na caixa do iPhone ou na tela do *#06#).',
+        ? 'Aponte para o código de barras ou para os números do IMEI de cada aparelho, um de cada vez. A câmera continua aberta para o próximo.'
+        : 'Aponte para o código de barras ou para os números do IMEI (caixa do iPhone, tela *#06# ou Ajustes → Sobre).',
       body: `
         <div class="scanner">
           <video playsinline muted autoplay data-video></video>
           <div class="scanner-guide"><span></span></div>
           <div class="scanner-status" data-status>${icon('barcode')}Iniciando a câmera…</div>
+          <div class="scanner-ocr" data-ocr>${icon('file')}Leitor de números carregando…</div>
         </div>
         <div class="scanner-actions">
           <button class="btn btn-primary" data-shot disabled>${icon('eye')}Tirar foto agora</button>
@@ -130,9 +198,11 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
 
     function stop() {
       clearInterval(timer); timer = null;
+      clearInterval(ocrTimer); ocrTimer = null;
       stream?.getTracks().forEach((t) => t.stop()); stream = null;
     }
     function finish(imei, photo) {
+      ocrLast = '';
       if (continuous) return accept(imei, photo);
       done = true;
       stop();
@@ -153,12 +223,16 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
       m.$('[data-count]').textContent = `${results.length} IMEI${results.length > 1 ? 's' : ''} lido${results.length > 1 ? 's' : ''}`;
       m.$('[data-list]').insertAdjacentHTML('afterbegin', `<div class="scan-item"><img src="${photo}" alt=""><span class="mono">${esc(imei)}</span>${icon('check')}</div>`);
     }
-    function resume() { m.$('[data-result]').innerHTML = ''; if (!stream) start(); else if (!timer) timer = setInterval(scanFrame, 350); }
+    function resume() {
+      m.$('[data-result]').innerHTML = '';
+      if (!stream) start();
+      else { if (!timer) timer = setInterval(scanFrame, 350); if (!ocrTimer) ocrTimer = setInterval(ocrFrame, 900); }
+    }
 
-    // Foto sem código legível: deixa usar a foto e digitar o IMEI
+    // Foto sem IMEI legível: deixa usar a foto e digitar o IMEI
     function showFallback(photo) {
       stop();
-      status(`${icon('alert')}Não encontrei um código de IMEI nesta foto.`, 'warn');
+      status(`${icon('alert')}Não encontrei um IMEI válido nesta foto (nem código de barras, nem números).`, 'warn');
       m.$('[data-result]').innerHTML = `
         <div class="scanner-fallback">
           <img src="${photo}" alt="Foto capturada">
@@ -182,13 +256,34 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
     }
 
     async function tryDecode(canvasFull, w, h, srcForPhoto) {
-      const tries = [frameCanvas(srcForPhoto, w, h, true), canvasFull];
-      for (const c of tries) {
-        const texts = await decoder(c);
-        for (const t of texts) { const imei = extractImei(t); if (imei) return imei; }
-        if (texts.length) status(`${icon('barcode')}Código lido, mas não é um IMEI. Aponte para o código do <b>IMEI</b>.`, 'warn');
+      if (decoder) {
+        for (const c of [frameCanvas(srcForPhoto, w, h, true), canvasFull]) {
+          const texts = await decoder(c);
+          for (const t of texts) { const imei = extractImei(t); if (imei) return imei; }
+        }
       }
+      // sem código de barras: tenta ler os números impressos
+      status(`${icon('file')}Lendo os números do IMEI na foto…`);
+      try {
+        for (const band of [true, false]) {
+          const imei = await ocrRead(ocrCanvas(srcForPhoto, w, h, band));
+          if (imei) return imei;
+        }
+      } catch (e) { console.warn(e); }
       return '';
+    }
+
+    // Leitura dos números ao vivo: só aceita quando o mesmo IMEI é lido duas vezes seguidas
+    async function ocrFrame() {
+      if (!ocrReady || ocrBusy || done || !video.videoWidth || Date.now() < pauseUntil) return;
+      ocrBusy = true;
+      try {
+        const w = video.videoWidth, h = video.videoHeight;
+        const imei = await ocrRead(ocrCanvas(video, w, h, true));
+        if (done || Date.now() < pauseUntil) return;
+        if (imei && imei === ocrLast) { status(`${icon('check')}IMEI ${imei} (números)`, 'ok'); finish(imei, makePhoto(video, w, h)); }
+        else if (imei) { ocrLast = imei; status(`${icon('file')}Números lidos: ${imei}. Confirmando… mantenha o celular firme.`); }
+      } catch (e) { console.warn(e); } finally { ocrBusy = false; }
     }
 
     async function scanFrame() {
@@ -209,6 +304,13 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
     }
 
     async function start() {
+      if (!ocrReady) {
+        loadOcr().then(() => {
+          ocrReady = true;
+          const el = m.$('[data-ocr]');
+          if (el) { el.innerHTML = `${icon('check')}Lê código de barras e números`; el.classList.add('ready'); }
+        }).catch(() => { const el = m.$('[data-ocr]'); if (el) el.innerHTML = `${icon('alert')}Leitura de números indisponível (sem internet?)`; });
+      }
       try {
         decoder ||= await makeDecoder();
       } catch (e) { status(`${icon('alert')}${esc(e.message)}`, 'warn'); return; }
@@ -222,8 +324,9 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
         video.srcObject = stream;
         await video.play().catch(() => {});
         m.$('[data-shot]').disabled = false;
-        status(`${icon('barcode')}Procurando o código do IMEI… mantenha o celular firme.`);
+        status(`${icon('barcode')}Procurando o IMEI (código de barras ou números)… mantenha o celular firme.`);
         timer = setInterval(scanFrame, 350);
+        ocrTimer = setInterval(ocrFrame, 900);
       } catch (e) {
         const denied = e?.name === 'NotAllowedError' || e?.name === 'SecurityError';
         status(`${icon('alert')}${denied ? 'Permita o acesso à câmera nas configurações do navegador, ou use “Escolher foto”.' : 'Não foi possível abrir a câmera. Use “Escolher foto”.'}`, 'warn');
@@ -235,7 +338,8 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
       if (!video.videoWidth) return;
       const w = video.videoWidth, h = video.videoHeight;
       const photo = makePhoto(video, w, h);
-      clearInterval(timer);
+      clearInterval(timer); timer = null;
+      clearInterval(ocrTimer); ocrTimer = null;
       status(`${icon('barcode')}Analisando a foto…`);
       const imei = await tryDecode(frameCanvas(video, w, h, false), w, h, video);
       if (imei) { finish(imei, photo); if (continuous) resume(); } else showFallback(photo);
@@ -253,7 +357,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
       decoder ||= await makeDecoder().catch(() => null);
       const w = img.naturalWidth, h = img.naturalHeight;
       const photo = makePhoto(img, w, h);
-      const imei = decoder ? await tryDecode(frameCanvas(img, w, h, false), w, h, img) : '';
+      const imei = await tryDecode(frameCanvas(img, w, h, false), w, h, img);
       URL.revokeObjectURL(img.src);
       e.target.value = '';
       if (imei) { finish(imei, photo); if (continuous) resume(); } else showFallback(photo);

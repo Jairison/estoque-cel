@@ -44,6 +44,7 @@ function loadOcr() {
       }
       const worker = await window.Tesseract.createWorker('eng', 1, { workerPath: TESSERACT_WORKER, corePath: TESSERACT_CORE });
       await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+      worker.__psm = '6';
       return worker;
     })().catch((e) => { ocrLoading = null; throw e; });
   }
@@ -62,10 +63,64 @@ function ocrCanvas(src, w, h, band) {
   x.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
   return c;
 }
-async function ocrRead(canvas) {
+async function ocrRead(canvas, psm = '6') {
   const worker = await loadOcr();
+  if (worker.__psm !== psm) { await worker.setParameters({ tessedit_pageseg_mode: psm }); worker.__psm = psm; }
   const { data } = await worker.recognize(canvas);
   return imeiFromText(data.text);
+}
+
+// ── Fotos em alta resolução (celular tira 12 MP): a etiqueta ocupa uma parte pequena da foto.
+// Analisamos a foto inteira em alta resolução e depois pedaços dela ("zoom" em cada região).
+// rotate: 0, 90, 180 ou 270 graus (fotos tiradas com a etiqueta de lado)
+function cropCanvas(src, sx, sy, sw, sh, maxSide, { filter = '', rotate = 0 } = {}) {
+  const scale = Math.min(maxSide / Math.max(sw, sh), 2);
+  const W = Math.round(sw * scale), H = Math.round(sh * scale);
+  const side = rotate === 90 || rotate === 270;
+  const c = document.createElement('canvas');
+  c.width = side ? H : W; c.height = side ? W : H;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  if (filter) x.filter = filter;
+  if (rotate === 90) { x.translate(c.width, 0); x.rotate(Math.PI / 2); }
+  if (rotate === 180) { x.translate(c.width, c.height); x.rotate(Math.PI); }
+  if (rotate === 270) { x.translate(0, c.height); x.rotate(-Math.PI / 2); }
+  x.drawImage(src, sx, sy, sw, sh, 0, 0, W, H);
+  return c;
+}
+// Preto e branco adaptativo (compara cada ponto com a média da vizinhança): resiste a luz desigual e desfoque
+function binarize(c, win = 31, k = 0.12) {
+  const x = c.getContext('2d', { willReadFrequently: true });
+  const W = c.width, H = c.height;
+  const d = x.getImageData(0, 0, W, H), p = d.data;
+  const g = new Uint8ClampedArray(W * H);
+  for (let i = 0, j = 0; i < p.length; i += 4, j++) g[j] = (p[i] * 299 + p[i + 1] * 587 + p[i + 2] * 114) / 1000;
+  const I = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) { let row = 0; for (let xx = 0; xx < W; xx++) { row += g[y * W + xx]; I[(y + 1) * (W + 1) + xx + 1] = I[y * (W + 1) + xx + 1] + row; } }
+  const r = win >> 1;
+  for (let y = 0; y < H; y++) {
+    const y1 = Math.max(0, y - r), y2 = Math.min(H, y + r + 1);
+    for (let xx = 0; xx < W; xx++) {
+      const x1 = Math.max(0, xx - r), x2 = Math.min(W, xx + r + 1);
+      const sum = I[y2 * (W + 1) + x2] - I[y1 * (W + 1) + x2] - I[y2 * (W + 1) + x1] + I[y1 * (W + 1) + x1];
+      const v = g[y * W + xx] < (sum / ((x2 - x1) * (y2 - y1))) * (1 - k) ? 0 : 255;
+      const i = (y * W + xx) * 4; p[i] = p[i + 1] = p[i + 2] = v;
+    }
+  }
+  x.putImageData(d, 0, 0);
+  return c;
+}
+// Regiões da foto: inteira, 4 quadrantes + centro (com sobreposição) e grade 3×3
+function* photoRegions(w, h) {
+  yield { sx: 0, sy: 0, sw: w, sh: h, label: 'foto inteira' };
+  const tw = w * 0.6, th = h * 0.6;
+  for (const [fx, fy] of [[0.5, 0.5], [0, 0], [1, 0], [0, 1], [1, 1]]) {
+    yield { sx: Math.round((w - tw) * fx), sy: Math.round((h - th) * fy), sw: Math.round(tw), sh: Math.round(th), label: 'região ampliada' };
+  }
+  const gw = w * 0.42, gh = h * 0.42;
+  for (const fy of [0, 0.5, 1]) for (const fx of [0, 0.5, 1]) {
+    if (fx === 0.5 && fy === 0.5) continue;
+    yield { sx: Math.round((w - gw) * fx), sy: Math.round((h - gh) * fy), sw: Math.round(gw), sh: Math.round(gh), label: 'detalhe' };
+  }
 }
 
 // Extrai o IMEI do texto lido. Corrige trocas comuns do OCR (O→0, I→1, S→5, B→8…), junta grupos
@@ -149,7 +204,7 @@ async function makeDecoder() {
 // Recorta uma faixa central (onde fica o guia) para leitura mais confiável
 function frameCanvas(src, w, h, band) {
   const c = document.createElement('canvas');
-  const maxW = 1280;
+  const maxW = 1920;
   const s = Math.min(1, maxW / w);
   if (band) {
     const bh = Math.round(h * 0.42), by = Math.round((h - bh) / 2);
@@ -255,22 +310,62 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
       m.$('[data-retry]').addEventListener('click', () => { m.$('[data-result]').innerHTML = ''; start(); });
     }
 
-    async function tryDecode(canvasFull, w, h, srcForPhoto) {
-      if (decoder) {
-        for (const c of [frameCanvas(srcForPhoto, w, h, true), canvasFull]) {
-          const texts = await decoder(c);
+    // Foto parada: 1) código de barras na foto inteira, em pedaços ampliados e girada;
+    //              2) números (OCR) na foto inteira e em pedaços ampliados. Para no primeiro IMEI válido.
+    async function tryDecode(_unused, w, h, src) {
+      let found = '';
+      const stopped = () => !!found || done;
+      status(`${icon('barcode')}Procurando o IMEI na foto (código de barras e números)…`);
+
+      // 1) Código de barras: foto inteira, girada e 5 regiões ampliadas (centro + quadrantes)
+      const barcodeTask = (async () => {
+        if (!decoder) return '';
+        const views = [() => cropCanvas(src, 0, 0, w, h, 2600), () => cropCanvas(src, 0, 0, w, h, 2600, { rotate: 90 })];
+        for (const r of [...photoRegions(w, h)].slice(1, 6)) views.push(() => cropCanvas(src, r.sx, r.sy, r.sw, r.sh, 2000));
+        for (const make of views) {
+          if (stopped()) return '';
+          const texts = await decoder(make());
           for (const t of texts) { const imei = extractImei(t); if (imei) return imei; }
+          await new Promise((r) => setTimeout(r, 0)); // não trava a tela
         }
-      }
-      // sem código de barras: tenta ler os números impressos
-      status(`${icon('file')}Lendo os números do IMEI na foto…`);
-      try {
-        for (const band of [true, false]) {
-          const imei = await ocrRead(ocrCanvas(srcForPhoto, w, h, band));
-          if (imei) return imei;
-        }
-      } catch (e) { console.warn(e); }
-      return '';
+        return '';
+      })();
+
+      // 2) Números (OCR, roda em segundo plano ao mesmo tempo): primeiro as tentativas leves, depois as pesadas
+      const ocrTask = (async () => {
+        const gray = 'grayscale(1) contrast(1.5)';
+        const tw = w * 0.6, th = h * 0.6, cx = (w - tw) / 2, cy = (h - th) / 2;
+        const steps = [
+          () => cropCanvas(src, 0, 0, w, h, 2800, { filter: gray }),                         // foto nítida
+          () => cropCanvas(src, 0, 0, w, h, 2800, { filter: gray, rotate: 270 }),            // etiqueta de lado
+          () => cropCanvas(src, 0, 0, w, h, 2800, { filter: gray, rotate: 90 }),             // etiqueta do outro lado
+          () => binarize(cropCanvas(src, 0, 0, w, h, 3200, { filter: gray })),               // tremida / luz ruim
+          () => binarize(cropCanvas(src, cx, cy, tw, th, 2800, { filter: gray })),           // etiqueta pequena no centro
+        ];
+        try {
+          await loadOcr();
+          for (let i = 0; i < steps.length; i++) {
+            if (stopped()) return '';
+            status(`${icon('file')}Lendo os números do IMEI na foto… (etapa ${i + 1} de ${steps.length})`);
+            await new Promise((r) => setTimeout(r, 30));
+            const imei = await ocrRead(steps[i](), '11');
+            if (imei) return imei;
+          }
+        } catch (e) { console.warn(e); }
+        return '';
+      })();
+
+      // o primeiro que encontrar um IMEI válido vence
+      return new Promise((resolve) => {
+        let pending = 2;
+        const settle = (imei) => {
+          if (found) return;
+          if (imei) { found = imei; resolve(imei); }
+          else if (--pending === 0) resolve('');
+        };
+        barcodeTask.then(settle, () => settle(''));
+        ocrTask.then(settle, () => settle(''));
+      });
     }
 
     // Leitura dos números ao vivo: só aceita quando o mesmo IMEI é lido duas vezes seguidas
@@ -281,6 +376,8 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
         const w = video.videoWidth, h = video.videoHeight;
         const imei = await ocrRead(ocrCanvas(video, w, h, true));
         if (done || Date.now() < pauseUntil) return;
+        // modo contínuo: IMEI que já entrou na lista (ex.: lido antes pelo código de barras) não é "confirmado" de novo
+        if (imei && seen.has(imei)) { status(`${icon('check')}IMEI ${imei} já foi lido. Aponte para o próximo aparelho.`, 'ok'); return; }
         if (imei && imei === ocrLast) { status(`${icon('check')}IMEI ${imei} (números)`, 'ok'); finish(imei, makePhoto(video, w, h)); }
         else if (imei) { ocrLast = imei; status(`${icon('file')}Números lidos: ${imei}. Confirmando… mantenha o celular firme.`); }
       } catch (e) { console.warn(e); } finally { ocrBusy = false; }
@@ -322,6 +419,7 @@ function openImeiScanner({ title = 'Ler IMEI pela câmera', continuous = false, 
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
         if (done) return stop();
         video.srcObject = stream;
+        stream.getVideoTracks()[0]?.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
         await video.play().catch(() => {});
         m.$('[data-shot]').disabled = false;
         status(`${icon('barcode')}Procurando o IMEI (código de barras ou números)… mantenha o celular firme.`);

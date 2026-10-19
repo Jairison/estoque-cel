@@ -715,3 +715,103 @@ a.user-card:hover { border-color: var(--gold); background: var(--gold-soft); }
 .scanner-ocr svg.i { width: 13px; height: 13px; }
 .offline-bar { position: sticky; top: 0; z-index: 90; display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: var(--orange); color: #1a1206; font-size: 13px; }
 .offline-bar .btn { margin-left: auto; }
+
+/* ═══════════════════════ Responsividade (celular e tablet) ═══════════════════════ */
+/* Tabelas viram cartões: nada de rolar para o lado */
+@media (max-width: 900px) {
+  .table-wrap { overflow: visible; }
+  .table thead { display: none; }
+  .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
+  .table tbody { padding: 4px 0 8px; }
+  .table tbody tr {
+    position: relative; width: auto; margin: 10px 12px; padding: 6px 2px;
+    border: 1px solid var(--border); border-radius: 14px; background: var(--surface);
+  }
+  .table tbody tr:hover { background: var(--surface); }
+  .table tbody tr.selected { border-color: var(--gold); }
+  .table td {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 6px 12px; border: 0 !important; text-align: right; white-space: normal; min-height: 30px;
+  }
+  .table td::before {
+    content: attr(data-label); flex-shrink: 0; text-align: left;
+    font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+  }
+  .table td[data-label=""]::before, .table td:not([data-label])::before { display: none; }
+  .table td:empty { display: none; }
+  /* coluna principal (aparelho / usuário): título do cartão */
+  .table td:has(> .cell-model) { justify-content: flex-start; text-align: left; padding-top: 8px; padding-right: 48px; }
+  .table td:has(> .cell-model)::before { display: none; }
+  /* caixa de seleção no canto do cartão */
+  .table td:has(> .check-input) { position: absolute; top: 10px; right: 6px; width: auto; min-height: 0; padding: 4px 8px; }
+  /* ações no rodapé do cartão */
+  .table td:has(> .actions) { justify-content: flex-end; border-top: 1px dashed var(--border) !important; margin-top: 4px; padding-top: 8px; }
+  .table td:has(> .actions)::before { display: none; }
+  .table .actions { flex-wrap: wrap; justify-content: flex-end; }
+  .table tr.dim td { opacity: 1; }
+  .table tr.dim { opacity: .62; }
+  /* linhas de grupo (modelo no estoque do colaborador) */
+  .table tbody tr.row-group { border: 0; background: transparent; margin: 18px 12px 0; padding: 0; }
+  .table tbody tr.row-group td { padding: 0 2px; justify-content: flex-start; }
+  .table tbody tr.row-group td::before { display: none; }
+  .stock-table td:has(.qty-ctl) .actions { width: 100%; justify-content: flex-end; }
+}
+
+/* Celular */
+@media (max-width: 640px) {
+  /* filtros em grade, busca na largura toda */
+  .toolbar { gap: 8px; padding: 14px; }
+  .toolbar > * { flex: 1 1 140px; min-width: 0; }
+  .toolbar .grow, .toolbar > .input-icon { flex-basis: 100%; }
+  .toolbar .select, .toolbar .input { width: 100%; min-width: 0; }
+  .toolbar > .btn-icon { flex: 0 0 auto; }
+  .toolbar .seg, .toolbar > div:has(> .seg) { flex-basis: 100%; }
+  .seg { max-width: 100%; flex-wrap: wrap; }
+  .seg button { flex: 1 1 auto; justify-content: center; }
+  .toolbar > div:has(> input[type=date]) { flex-basis: 100%; display: grid !important; grid-template-columns: 1fr auto 1fr; }
+  .toolbar input[type=date] { width: 100% !important; min-width: 0; }
+  .stat-row { gap: 6px 16px; padding: 12px 14px; }
+
+  /* indicadores do dashboard em 2 colunas */
+  .kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .kpi { padding: 14px; }
+  .kpi .k-top { margin-bottom: 8px; }
+  .kpi .k-label { font-size: 11.5px; line-height: 1.3; }
+  .kpi .k-ico { width: 28px; height: 28px; }
+  .kpi .k-value { font-size: 19px; }
+  .kpi .k-foot { font-size: 11px; }
+  .kpi.hero { grid-column: 1 / -1; }
+  .kpi.hero .k-value { font-size: 30px; }
+
+  /* formulários e configurações em uma coluna */
+  .form-grid { grid-template-columns: 1fr !important; }
+  .form-grid .span-2, .form-grid .span-all { grid-column: auto; }
+  form.form-grid[style*="max-width"] { max-width: 100% !important; }
+  .chip-editor form { max-width: 100%; }
+
+  /* listas (pedidos de acesso, movimentações recentes) quebram linha em vez de espremer */
+  .list-item { flex-wrap: wrap; padding: 12px 16px; }
+  .list-item .grow { min-width: 0; flex: 1 1 60%; }
+  .list-item .grow small { word-break: break-word; }
+  .list-item > .select { flex: 1 1 100%; width: 100%; }
+
+  /* cabeçalho do colaborador: só a coroa + ações */
+  .c-top .brand > div:last-child { display: none; }
+  .c-top { gap: 8px; }
+  .c-hero .mini { gap: 18px; }
+  .card-head { padding: 14px 16px; }
+  .card-body { padding: 16px; }
+  .page-head h2 { font-size: 20px; }
+  .modal-foot { flex-wrap: wrap; }
+  .modal-foot .btn { flex: 1 1 auto; }
+}
+/* Tablet: 2 cartões por linha */
+@media (min-width: 641px) and (max-width: 900px) {
+  .table tbody { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 4px 6px 10px; }
+  .table tbody tr { margin: 8px 6px; }
+  .table tbody tr.row-group { grid-column: 1 / -1; }
+}
+/* Dashboard no celular: o último indicador ocupa a linha inteira se ficar sozinho */
+@media (max-width: 640px) {
+  .kpis > .kpi:last-child:nth-child(even) { grid-column: 1 / -1; }
+}

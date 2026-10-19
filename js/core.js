@@ -421,6 +421,22 @@ function openChangePassword() {
   m.$('[data-form]').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
 }
 
+// Tabelas responsivas: no celular/tablet cada linha vira um cartão. Copia o título de cada coluna
+// para as células (data-label), assim o CSS mostra "Custo: R$ 9.600,00" dentro do cartão.
+function labelTables(root = document) {
+  for (const table of root.querySelectorAll('table.table')) {
+    const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    for (const tr of table.querySelectorAll('tbody tr')) {
+      if (tr.dataset.labeled) continue;
+      tr.dataset.labeled = '1';
+      const cells = [...tr.children];
+      if (cells.some((td) => td.colSpan > 1)) { tr.classList.add('row-group'); continue; }
+      cells.forEach((td, i) => { td.dataset.label = heads[i] || ''; });
+    }
+  }
+}
+new MutationObserver(() => labelTables()).observe(document.documentElement, { childList: true, subtree: true });
+
 // Sem conexão com o banco: avisa que os dados exibidos podem estar desatualizados
 window.addEventListener('db-offline', () => {
   if (document.querySelector('[data-offline]')) return;

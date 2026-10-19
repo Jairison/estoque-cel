@@ -301,7 +301,7 @@ function renderStock() {
   }
 
   $('#stock').innerHTML = `<div class="table-wrap"><table class="table stock-table">
-    <thead><tr><th>Aparelho</th><th>Cor</th><th>Condição</th><th class="center">Disponível</th><th class="right">Adicionar ao pedido</th></tr></thead>
+    <thead><tr><th>Capacidade</th><th>Cor</th><th>Condição</th><th class="center">Disponível</th><th class="right">Adicionar ao pedido</th></tr></thead>
     <tbody>${[...byModel.entries()].map(([model, gs]) => `
       <tr class="group-row"><td colspan="5"><div class="cell-model"><div class="phone-ico">${icon('phone')}</div><strong>${esc(model)}</strong><span class="badge plain">${gs.reduce((s, g) => s + g.qty, 0)} un.</span></div></td></tr>
       ${gs.map((g) => {

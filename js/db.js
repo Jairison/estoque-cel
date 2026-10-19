@@ -553,6 +553,14 @@ route('POST', '/api/stock/out', 'any', async ({ s, body }) => {
     refs.forEach((r) => tx.update(r, { status: 'saida', outAt: at, outMovementId: mvRef.id, updatedAt: at }));
     tx.set(mvRef, mv);
   }).catch((e) => { throw fbErr(e); });
+  // Atualiza o estoque da tela na hora (transações só chegam ao cache local quando o servidor avisa;
+  // sem isso, uma 2ª venda logo em seguida poderia tentar o mesmo aparelho)
+  const cacheKey = isAdmin(s) ? 'units' : 'unitsAvail';
+  const cached = live[cacheKey]?.map;
+  if (cached) for (const u of chosen) {
+    if (cacheKey === 'unitsAvail') cached.delete(u.id);
+    else cached.set(u.id, { ...u, status: 'saida', outAt: at, outMovementId: mvRef.id, updatedAt: at });
+  }
   // Fotos do IMEI (comprovante), gravadas depois da saída confirmada
   const photoError = await savePhotos(s, photos, { movementId: mvRef.id, kind: 'saida', unitByImei: new Map(chosen.filter((u) => u.imei).map((u) => [u.imei, u.id])) });
   await addLog(s, s.me, 'Saída', `${reason}: ${describeItems(mv.items)}${customer ? ` — cliente ${customer}` : ''}${photos.length ? ` — ${photos.length} foto(s) do IMEI` : ''}`);

@@ -37,6 +37,20 @@ Os valores do `firebaseConfig` **não são secretos**. Quem protege os dados sã
 - **Esqueci minha senha:** na tela de login, o Firebase envia o e-mail de redefinição.
 - Admin e colaborador podem ficar conectados ao mesmo tempo no mesmo navegador, cada um na própria conta.
 
+## Proteção dos dados
+
+- **Nada é apagado de verdade.** Excluir um aparelho o move para a **🗑 Lixeira** (filtro em *Aparelhos*), de onde ele pode ser restaurado. Remover um usuário só tira o acesso: o cadastro e o histórico ficam, e ele pode ser reativado.
+- **As regras do Firebase proíbem apagar qualquer registro**, até para o administrador. Elas valem mesmo para quem tentar mexer no banco por fora do sistema.
+- **A auditoria guarda o antes e o depois** de cada edição (preço, IMEI, cor, status, configurações…).
+- **Os dados só aparecem depois de confirmados pelo servidor.** Sem internet, uma faixa avisa que eles podem estar desatualizados, e nenhuma venda é confirmada sem chegar ao banco.
+- **Cache local:** reabrir o sistema baixa só o que mudou, para não estourar o limite diário do plano gratuito.
+
+### Backup (faça toda semana)
+- **Configurações → Baixar backup** gera um arquivo `.json` com aparelhos, preços, movimentações, usuários e auditoria. **Backup com fotos** inclui também as fotos dos IMEIs. Guarde no Google Drive, num pen drive ou no e-mail.
+- O dashboard avisa quando o último backup tem mais de 7 dias.
+- **Configurações → Restaurar backup** mostra um resumo e **recria só o que estiver faltando**, sem alterar nada que já existe. Restaurar duas vezes não duplica.
+- A mesma opção importa o arquivo `data/db.json` do sistema antigo.
+
 ## Testar no computador
 
 ```bash

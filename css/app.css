@@ -713,3 +713,5 @@ a.user-card:hover { border-color: var(--gold); background: var(--gold-soft); }
 }
 .scanner-ocr.ready { background: rgba(24, 150, 90, 0.75); }
 .scanner-ocr svg.i { width: 13px; height: 13px; }
+.offline-bar { position: sticky; top: 0; z-index: 90; display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: var(--orange); color: #1a1206; font-size: 13px; }
+.offline-bar .btn { margin-left: auto; }

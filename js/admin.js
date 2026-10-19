@@ -108,6 +108,28 @@ async function quickOut(preset) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// Avisos de proteção dos dados (backup em dia e mais de um administrador)
+function safetyBanners(d) {
+  const out = [];
+  const days = d.lastBackupAt ? Math.floor((Date.now() - new Date(d.lastBackupAt)) / 864e5) : null;
+  if (days === null || days >= 7) {
+    out.push(`<div class="banner" data-safety>${icon('database')}<div class="grow"><strong>${days === null ? 'Nenhum backup feito ainda.' : `Último backup há ${days} dias.`}</strong> Baixe uma cópia de segurança do estoque toda semana e guarde fora do computador (Google Drive, pen drive, e-mail).</div><button class="btn btn-sm" data-do-backup data-loading="Gerando...">Fazer backup agora</button></div>`);
+  }
+  if (d.activeAdmins === 1) {
+    out.push(`<div class="banner" data-safety>${icon('shield')}<div class="grow"><strong>Só existe um administrador.</strong> Se você perder o acesso ao seu e-mail, ninguém mais consegue administrar o sistema. Cadastre um segundo administrador de confiança.</div><a class="btn btn-sm" href="#/usuarios">Cadastrar</a></div>`);
+  }
+  return out.join('');
+}
+async function downloadBackup(btn, photos = false) {
+  const data = await withLoading(btn, () => api('/api/backup', { body: { photos } }));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  a.download = `backup-estoque-${localDay(new Date())}${photos ? '-com-fotos' : ''}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(`Backup baixado: ${plural(data.units.length, 'aparelho', 'aparelhos')}, ${plural(data.movements.length, 'movimentação', 'movimentações')}. Guarde o arquivo em local seguro.`);
+}
+
 function defaultPwBanner() {
   if (!S.me.defaultPassword) return '';
   return `<div class="banner" data-default-pw>${icon('alert')}<div class="grow"><strong>Senha padrão em uso.</strong> Altere a senha do administrador para proteger o sistema.</div><button class="btn btn-sm" data-change-pw>Alterar senha</button></div>`;
@@ -120,6 +142,7 @@ async function viewDashboard() {
   const margin = d.month.value ? (d.month.profit / d.month.value) * 100 : 0;
   const root = mount(`
     ${defaultPwBanner()}
+    ${safetyBanners(d)}
     <div class="kpis">
       <div class="card kpi hero">
         <div class="k-top"><span class="k-label">Aparelhos em estoque</span><span class="k-ico">${icon('box')}</span></div>
@@ -197,6 +220,9 @@ async function viewDashboard() {
   `);
 
   root.querySelector('[data-change-pw]')?.addEventListener('click', openChangePassword);
+  root.querySelector('[data-do-backup]')?.addEventListener('click', async (e) => {
+    try { await downloadBackup(e.currentTarget); rerender(); } catch (err) { toast(err.message, 'error'); }
+  });
   $('[data-chart-seg]', root).addEventListener('click', (e) => {
     const b = e.target.closest('[data-key]');
     if (!b) return;
@@ -317,7 +343,7 @@ async function viewEstoque() {
         <select class="select" data-f="storage">${opt('', 'Capacidade', f.storage)}${storages.map((s) => opt(s, s, f.storage)).join('')}</select>
         <select class="select" data-f="condition">${opt('', 'Condição', f.condition)}${S.settings.conditions.map((c) => opt(c, c, f.condition)).join('')}</select>
         <select class="select" data-f="status">
-          ${opt('estoque', 'Em estoque', f.status)}${opt('disponivel', 'Disponíveis', f.status)}${opt('reservado', 'Reservados', f.status)}${opt('manutencao', 'Em manutenção', f.status)}${opt('saida', 'Já saíram', f.status)}${opt('', 'Todos', f.status)}
+          ${opt('estoque', 'Em estoque', f.status)}${opt('disponivel', 'Disponíveis', f.status)}${opt('reservado', 'Reservados', f.status)}${opt('manutencao', 'Em manutenção', f.status)}${opt('saida', 'Já saíram', f.status)}${opt('', 'Todos', f.status)}${opt('excluido', '🗑 Lixeira', f.status)}
         </select>
         <select class="select" data-f="sort">
           ${opt('model', 'Ordenar: modelo', f.sort)}${opt('new', 'Mais recentes', f.sort)}${opt('old', 'Mais antigos', f.sort)}${opt('priceDesc', 'Maior preço', f.sort)}${opt('priceAsc', 'Menor preço', f.sort)}
@@ -376,6 +402,7 @@ async function viewEstoque() {
       if (b.dataset.act === 'view') openUnitDetails(u);
       if (b.dataset.act === 'out') openAdminOut([u], () => renderUnits(root));
       if (b.dataset.act === 'del') deleteUnit(u, root);
+      if (b.dataset.act === 'restore') restoreUnit(u, root);
     }
     else if (b.dataset.open) { f.model = b.dataset.model; f.storage = b.dataset.storage; S.unitView = 'unidades'; viewEstoque(); }
     else if (b.dataset.bulk) {
@@ -412,7 +439,9 @@ function filteredUnits() {
   };
   if (imeiQ) return S.units.filter((u) => u.imei.includes(imeiQ)).sort(sorts.new);
   return S.units.filter((u) => {
-    if (f.status === 'estoque') { if (u.status === 'saida') return false; }
+    if (f.status === 'excluido') { if (u.status !== 'excluido') return false; }
+    else if (u.status === 'excluido') return false; // a lixeira só aparece no filtro "Lixeira"
+    else if (f.status === 'estoque') { if (u.status === 'saida') return false; }
     else if (f.status && u.status !== f.status) return false;
     if (f.model && u.model !== f.model) return false;
     if (f.storage && u.storage !== f.storage) return false;
@@ -498,6 +527,19 @@ function unitRow(u) {
   const margin = u.price > 0 && u.cost > 0 ? ((u.price - u.cost) / u.price) * 100 : null;
   const sel = S.selected.has(u.id);
   const st = STATUS[u.status] || STATUS.disponivel;
+  if (u.status === 'excluido') return `<tr class="dim" data-id="${esc(u.id)}">
+    <td></td>
+    <td><div class="cell-model"><div class="phone-ico">${icon('trash')}</div><div><strong>${esc(u.model)} · ${esc(u.storage)}</strong><small>${esc(u.color)}</small></div></div></td>
+    <td>${conditionBadge(u.condition)}</td><td></td>
+    <td class="mono">${u.imei ? esc(fmtImei(u.imei)) : '<span class="muted">—</span>'}</td>
+    <td class="right num">${fmtMoney(u.cost)}</td><td class="right num">${fmtMoney(u.price)}</td><td></td>
+    <td><span class="badge red">Na lixeira</span></td>
+    <td class="muted" title="Excluído por ${esc(u.deletedBy || '—')}">${fmtDate(u.deletedAt)}</td>
+    <td><div class="actions">
+      <button class="btn btn-ghost btn-icon btn-sm" data-act="view" title="Detalhes e histórico">${icon('eye')}</button>
+      <button class="btn btn-sm" data-act="restore" title="Devolver para o estoque">${icon('undo')}Restaurar</button>
+    </div></td>
+  </tr>`;
   return `<tr class="${sel ? 'selected' : ''} ${u.status === 'saida' ? 'dim' : ''}" data-id="${esc(u.id)}">
     <td class="center"><input type="checkbox" class="check-input" data-sel ${sel ? 'checked' : ''} aria-label="Selecionar"></td>
     <td><div class="cell-model"><div class="phone-ico">${icon('phone')}</div><div><strong>${esc(u.model)} · ${esc(u.storage)}</strong><small>${esc(u.color)}</small></div></div></td>
@@ -513,7 +555,7 @@ function unitRow(u) {
       ${u.status === 'disponivel' ? `<button class="btn btn-ghost btn-icon btn-sm" data-act="out" title="Dar saída">${icon('out')}</button>` : ''}
       <button class="btn btn-ghost btn-icon btn-sm" data-act="view" title="Detalhes e histórico">${icon('eye')}</button>
       <button class="btn btn-ghost btn-icon btn-sm" data-act="edit" title="Editar">${icon('edit')}</button>
-      <button class="btn btn-ghost btn-icon btn-sm" data-act="del" title="Excluir">${icon('trash')}</button>
+      <button class="btn btn-ghost btn-icon btn-sm" data-act="del" title="Mover para a lixeira">${icon('trash')}</button>
     </div></td>
   </tr>`;
 }
@@ -539,14 +581,14 @@ function renderBulk(root) {
 async function bulk(action, value, root) {
   const ids = [...S.selected];
   if (action === 'delete') {
-    const ok = await confirmDialog({ title: `Excluir ${plural(ids.length, 'aparelho', 'aparelhos')}?`, message: 'Os registros serão removidos do estoque. O histórico de movimentações é preservado. Esta ação não pode ser desfeita.', confirmText: 'Excluir', danger: true });
+    const ok = await confirmDialog({ title: `Mover ${plural(ids.length, 'aparelho', 'aparelhos')} para a lixeira?`, message: 'Os aparelhos saem do estoque, mas <b>nada é apagado</b>: você pode restaurá-los a qualquer momento pelo filtro <b>🗑 Lixeira</b>. O histórico é preservado.', confirmText: 'Mover para a lixeira', danger: true });
     if (!ok) return;
   }
   try {
     await api('/api/units/bulk', { method: 'POST', body: { ids, action, value } });
     await loadUnits();
     if (action === 'delete') S.selected.clear();
-    toast(action === 'delete' ? 'Aparelhos excluídos.' : 'Aparelhos atualizados.');
+    toast(action === 'delete' ? 'Aparelhos movidos para a lixeira.' : 'Aparelhos atualizados.');
     renderUnits(root);
     refreshLowBadge();
   } catch (err) { toast(err.message, 'error'); }
@@ -567,13 +609,23 @@ function bulkPrice(root) {
 }
 
 async function deleteUnit(u, root) {
-  const ok = await confirmDialog({ title: 'Excluir aparelho?', message: `<strong>${esc(u.model)} ${esc(u.storage)} ${esc(u.color)}</strong>${u.imei ? `<br><span class="mono">${esc(fmtImei(u.imei))}</span>` : ''}<br><br>Para registrar uma venda use “Dar saída”. A exclusão é indicada apenas para cadastros feitos por engano.`, confirmText: 'Excluir', danger: true });
+  const ok = await confirmDialog({ title: 'Mover para a lixeira?', message: `<strong>${esc(u.model)} ${esc(u.storage)} ${esc(u.color)}</strong>${u.imei ? `<br><span class="mono">${esc(fmtImei(u.imei))}</span>` : ''}<br><br>Para registrar uma venda use “Dar saída”. A lixeira é para cadastros feitos por engano — <b>nada é apagado</b> e dá para restaurar depois.`, confirmText: 'Mover para a lixeira', danger: true });
   if (!ok) return;
   try {
     await api(`/api/units/${u.id}`, { method: 'DELETE' });
-    S.units = S.units.filter((x) => x.id !== u.id);
+    await loadUnits();
     S.selected.delete(u.id);
-    toast('Aparelho excluído.');
+    toast('Aparelho movido para a lixeira. Para desfazer, use o filtro “🗑 Lixeira”.');
+    renderUnits(root);
+    refreshLowBadge();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function restoreUnit(u, root) {
+  try {
+    const r = await api(`/api/units/${u.id}/restore`, { method: 'POST' });
+    await loadUnits();
+    toast(`Aparelho restaurado (${STATUS[r.status]?.label || r.status}).`);
     renderUnits(root);
     refreshLowBadge();
   } catch (err) { toast(err.message, 'error'); }
@@ -648,6 +700,7 @@ function openUnitDetails(u) {
           ${row('Fornecedor', esc(u.supplier || '—'))}
           ${row('Entrada', fmtDateTime(u.createdAt))}
           ${u.outAt ? row('Saída', fmtDateTime(u.outAt)) : ''}
+          ${u.status === 'excluido' ? row('Na lixeira desde', `${fmtDateTime(u.deletedAt)} · ${esc(u.deletedBy || '—')}${u.deletedReason ? ` · ${esc(u.deletedReason)}` : ''}`) : ''}
         </div>
         <div>
           ${row('Custo', fmtMoney(u.cost))}
@@ -828,7 +881,7 @@ async function viewEntrada() {
       if (seen.has(i)) { res.dup.push(i); continue; }
       seen.add(i);
       if (!/^\d{15}$/.test(i) || !luhnOk(i)) res.invalid.push(i);
-      else if (S.units.some((u) => u.imei === i && u.status !== 'saida')) res.inStock.push(i);
+      else if (S.units.some((u) => u.imei === i && u.status !== 'saida' && u.status !== 'excluido')) res.inStock.push(i);
       else res.valid.push(i);
     }
     return res;
@@ -1100,7 +1153,8 @@ async function viewUsuarios() {
   S.users = await api('/api/users');
   refreshPendingBadge(S.users);
   const pending = S.users.filter((u) => u.pending);
-  const members = S.users.filter((u) => !u.pending);
+  const removedUsers = S.users.filter((u) => u.removed);
+  const members = S.users.filter((u) => !u.pending && !u.removed);
   const root = mount(`
     <div class="page-head">
       <div><h2>Usuários</h2><p>Cada pessoa tem o seu próprio cadastro, todos ligados ao mesmo estoque.</p></div>
@@ -1162,11 +1216,21 @@ async function viewUsuarios() {
         </div></td>
       </tr>`).join('')}</tbody>
     </table></div></div>
+    ${removedUsers.length ? `<details class="card" style="margin-top:20px"><summary class="card-body" style="cursor:pointer"><b>Usuários removidos (${removedUsers.length})</b> <span class="muted">— o histórico deles é mantido; você pode reativar o acesso</span></summary>
+      <div class="list">${removedUsers.map((u) => `<div class="list-item" data-id="${esc(u.id)}">
+        <div class="avatar violet">${esc(initials(u.name))}</div>
+        <div class="grow"><strong>${esc(u.name)}</strong><small>${esc(u.email)} · ${u.status === 'rejected' ? 'solicitação recusada' : 'acesso removido'}${u.removedAt ? ` em ${fmtDate(u.removedAt)}` : ''}</small></div>
+        <button class="btn btn-sm" data-act="reactivate">${icon('undo')}Reativar</button></div>`).join('')}</div></details>` : ''}
   `);
   root.addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.matches('[data-new]')) return openUserForm();
+    if (b.dataset.act === 'reactivate') {
+      const u = S.users.find((x) => x.id === b.closest('[data-id]').dataset.id);
+      try { await api(`/api/users/${u.id}`, { method: 'PUT', body: { active: true } }); toast(`Acesso de ${u.name} reativado.`); rerender(); } catch (err) { toast(err.message, 'error'); }
+      return;
+    }
     if (b.matches('[data-join-copy]')) {
       try { await navigator.clipboard.writeText(S.settings.joinCode); } catch {}
       return toast(`Código ${S.settings.joinCode} copiado.`);
@@ -1200,9 +1264,9 @@ async function viewUsuarios() {
       try { await api(`/api/users/${u.id}`, { method: 'PUT', body: { active: !u.active } }); toast(u.active ? 'Usuário desativado.' : 'Usuário ativado.'); rerender(); } catch (err) { toast(err.message, 'error'); }
     }
     if (b.dataset.act === 'del') {
-      const ok = await confirmDialog({ title: 'Excluir usuário?', message: `<b>${esc(u.name)}</b> (${esc(u.email)}) perderá o acesso. O histórico de movimentações feitas por ele é mantido.`, confirmText: 'Excluir', danger: true });
+      const ok = await confirmDialog({ title: 'Remover acesso?', message: `<b>${esc(u.name)}</b> (${esc(u.email)}) não conseguirá mais entrar. O cadastro e todo o histórico feito por essa pessoa são mantidos, e você pode reativar depois em “Usuários removidos”.`, confirmText: 'Remover acesso', danger: true });
       if (!ok) return;
-      try { await api(`/api/users/${u.id}`, { method: 'DELETE' }); toast('Usuário excluído.'); rerender(); } catch (err) { toast(err.message, 'error'); }
+      try { await api(`/api/users/${u.id}`, { method: 'DELETE' }); toast('Acesso removido. O histórico foi mantido.'); rerender(); } catch (err) { toast(err.message, 'error'); }
     }
   });
 }
@@ -1392,8 +1456,21 @@ async function viewConfig() {
         <div><button class="btn" data-pw>${icon('lock')}Alterar minha senha</button></div>
       </div>
       <div class="settings-section">
-        <div><h4>Backup</h4><p>Baixe uma cópia completa dos dados (estoque, movimentações, usuários e auditoria). Os dados ficam guardados no Firebase; o backup é uma cópia extra para você guardar.</p></div>
-        <div><button class="btn" data-backup data-loading="Gerando...">${icon('database')}Baixar backup (JSON)</button></div>
+        <div><h4>Backup</h4><p>Os dados ficam guardados no Firebase (Google). O backup é uma <b>cópia extra</b> para guardar fora do sistema — faça toda semana e guarde no Google Drive, pen drive ou e-mail.</p></div>
+        <div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-primary" data-backup data-loading="Gerando...">${icon('database')}Baixar backup</button>
+            <button class="btn" data-backup-photos data-loading="Gerando...">${icon('camera')}Backup com fotos (maior)</button>
+          </div>
+          <span class="hint" data-last-backup></span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div><h4>Restaurar backup</h4><p>Recupera aparelhos, movimentações e auditoria a partir de um arquivo de backup. <b>Só adiciona o que estiver faltando</b> — nada que já existe é alterado ou apagado. Também importa o arquivo <span class="mono">data/db.json</span> do sistema antigo.</p></div>
+        <div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+          <label class="btn">${icon('undo')}Escolher arquivo de backup<input type="file" accept=".json,application/json" data-restore-file hidden></label>
+          <span class="hint">Você verá um resumo antes de confirmar.</span>
+        </div>
       </div>
     </div>
   `);
@@ -1406,15 +1483,37 @@ async function viewConfig() {
       return true;
     } catch (err) { toast(err.message, 'error'); return false; }
   };
-  $('[data-backup]', root).addEventListener('click', async (e) => {
+  const showLast = (d) => { $('[data-last-backup]', root).textContent = d ? `Último backup: ${fmtDateTime(d)}` : 'Nenhum backup feito ainda.'; };
+  api('/api/dashboard').then((d) => showLast(d.lastBackupAt)).catch(() => {});
+  $('[data-backup]', root).addEventListener('click', async (e) => { try { await downloadBackup(e.currentTarget); showLast(new Date().toISOString()); } catch (err) { toast(err.message, 'error'); } });
+  $('[data-backup-photos]', root).addEventListener('click', async (e) => { try { await downloadBackup(e.currentTarget, true); showLast(new Date().toISOString()); } catch (err) { toast(err.message, 'error'); } });
+  $('[data-restore-file]', root).addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { return toast('Este arquivo não é um backup válido (JSON).', 'error'); }
+    let pv;
+    try { pv = await api('/api/restore/preview', { method: 'POST', body: { data } }); } catch (err) { return toast(err.message, 'error'); }
+    const m = pv.missing, tot = pv.total;
+    const nothing = !m.units && !m.movements && !m.logs && !m.photos;
+    const ok = await confirmDialog({
+      title: nothing ? 'Nada para restaurar' : 'Restaurar backup?',
+      iconName: 'undo',
+      message: `Arquivo: <b>${esc(pv.source)}</b><br><br>
+        <table style="width:100%;font-size:13px"><tr><th style="text-align:left"></th><th>No arquivo</th><th>Faltando no sistema</th></tr>
+        <tr><td>Aparelhos</td><td class="center">${tot.units}</td><td class="center"><b>${m.units}</b></td></tr>
+        <tr><td>Movimentações</td><td class="center">${tot.movements}</td><td class="center"><b>${m.movements}</b></td></tr>
+        <tr><td>Auditoria</td><td class="center">${tot.logs}</td><td class="center"><b>${m.logs}</b></td></tr>
+        <tr><td>Fotos</td><td class="center">${tot.photos}</td><td class="center"><b>${m.photos}</b></td></tr></table><br>
+        ${nothing ? 'Tudo o que está no arquivo já existe no sistema.' : 'Só os itens <b>faltando</b> serão adicionados. Nada existente será alterado.'}`,
+      confirmText: nothing ? 'Ok' : 'Restaurar',
+    });
+    if (!ok || nothing) return;
     try {
-      const data = await withLoading(e.currentTarget, () => api('/api/backup'));
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-      a.download = `backup-estoque-${localDay(new Date())}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-      toast('Backup baixado.');
+      const r = await api('/api/restore', { method: 'POST', body: { data } });
+      toast(`Restaurado: ${r.restored.units} aparelho(s), ${r.restored.movements} movimentação(ões), ${r.restored.logs} registro(s), ${r.restored.photos} foto(s).`);
+      S.units = []; S.movements = [];
     } catch (err) { toast(err.message, 'error'); }
   });
   $('[data-store-form]', root).addEventListener('submit', async (e) => {

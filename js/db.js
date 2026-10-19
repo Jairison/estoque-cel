@@ -9,7 +9,7 @@ import {
   updateProfile, sendPasswordResetEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
-  getFirestore, initializeFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
+  getFirestore, initializeFirestore, connectFirestoreEmulator, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
   query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { firebaseConfig, useEmulator } from './firebase-config.js';
@@ -35,7 +35,23 @@ const DEFAULT_COLORS = [
 const CONDITIONS = ['Novo', 'Seminovo', 'Vitrine', 'Recondicionado'];
 const REASONS = ['Venda', 'Troca', 'Garantia', 'Transferência', 'Devolução ao fornecedor', 'Outro'];
 const EDITABLE_STATUSES = ['disponivel', 'reservado', 'manutencao'];
-const STATUS_LABEL = { disponivel: 'disponível', reservado: 'reservado', manutencao: 'em manutenção', saida: 'fora do estoque' };
+const STATUS_LABEL = { disponivel: 'disponível', reservado: 'reservado', manutencao: 'em manutenção', saida: 'fora do estoque', excluido: 'na lixeira' };
+// IMEI "ocupado": aparelho que ainda está na loja (não saiu e não está na lixeira)
+const holdsImei = (u) => u.status !== 'saida' && u.status !== 'excluido';
+const fmtBRL = (n) => `R$ ${Number(n || 0).toFixed(2).replace('.', ',')}`;
+// Lista o que mudou numa edição ("preço: R$ 7.499,00 → R$ 7.299,00")
+function diffText(before, after, labels) {
+  const out = [];
+  for (const [k, label] of Object.entries(labels)) {
+    if (!(k in after)) continue;
+    const a = before[k] ?? '', b = after[k] ?? '';
+    if (String(a) === String(b)) continue;
+    const f = (v) => (['cost', 'price'].includes(k) ? fmtBRL(v) : v === '' || v == null ? '—' : String(v));
+    out.push(`${label}: ${f(a)} → ${f(b)}`);
+  }
+  return out.join('; ');
+}
+const UNIT_LABELS = { model: 'modelo', storage: 'capacidade', color: 'cor', condition: 'condição', battery: 'bateria', imei: 'IMEI', status: 'status', cost: 'custo', price: 'preço', supplier: 'fornecedor', note: 'observação' };
 const MAX_ENTRY = 200; // aparelhos por entrada (limite de gravação em lote do Firestore)
 
 // ───────────────────────── Utilidades ─────────────────────────
@@ -146,7 +162,15 @@ function fb(name, temp = false) {
     const auth = temp ? initializeAuth(app, { persistence: inMemoryPersistence }) : getAuth(app);
     auth.languageCode = 'pt-BR';
     // No emulador local, o canal em tempo real pode travar; lá usamos long polling (só nos testes)
-    const db = useEmulator ? initializeFirestore(app, { experimentalForceLongPolling: true }) : getFirestore(app);
+    // Cache local persistente (IndexedDB): ao reabrir, só o que mudou é baixado de novo.
+    // Instâncias temporárias (login/cadastro) ficam só na memória.
+    let db;
+    try {
+      db = initializeFirestore(app, {
+        localCache: temp ? memoryLocalCache() : persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+        ...(useEmulator ? { experimentalForceLongPolling: true } : {}),
+      });
+    } catch (e) { console.warn('Cache local indisponível, usando memória.', e); db = getFirestore(app); }
     if (useEmulator) {
       connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
       connectFirestoreEmulator(db, '127.0.0.1', 8080);
@@ -201,18 +225,31 @@ async function loadSession() {
 const live = {};
 let changeTimer;
 function notifyChange() { clearTimeout(changeTimer); changeTimer = setTimeout(() => window.dispatchEvent(new Event('db-change')), 250); }
+// Os dados só são entregues às telas DEPOIS de confirmados pelo servidor (nunca só o que está
+// guardado no aparelho). Sem internet, após alguns segundos usa a cópia local e avisa na tela.
+let offlineWarned = false;
+function warnOffline() {
+  if (offlineWarned) return;
+  offlineWarned = true;
+  window.dispatchEvent(new Event('db-offline'));
+}
 function watch(key, q) {
   if (live[key]) return live[key].ready;
   const entry = { map: new Map() };
   entry.ready = new Promise((resolve, reject) => {
-    let first = true;
-    entry.unsub = onSnapshot(q, (snapshot) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(entry.map); } };
+    const timer = setTimeout(() => { if (!settled) { warnOffline(); done(); } }, 12000);
+    entry.unsub = onSnapshot(q, { includeMetadataChanges: true }, (snapshot) => {
+      let changed = false;
       for (const ch of snapshot.docChanges()) {
+        changed = true;
         if (ch.type === 'removed') entry.map.delete(ch.doc.id);
         else entry.map.set(ch.doc.id, { id: ch.doc.id, ...ch.doc.data() });
       }
-      if (first) { first = false; resolve(entry.map); } else notifyChange();
-    }, (err) => { if (first) { first = false; reject(fbErr(err)); } else console.error(err); });
+      if (!snapshot.metadata.fromCache) done(); // confirmado pelo servidor
+      if (settled && changed) notifyChange();
+    }, (err) => { if (!settled) { settled = true; clearTimeout(timer); reject(fbErr(err)); } else console.error(err); });
   });
   live[key] = entry;
   return entry.ready;
@@ -415,9 +452,15 @@ route('PUT', '/api/settings', 'admin', async ({ s, body }) => {
   if ('models' in body) { const v = list(body.models, 60); if (!v.length) bad('Cadastre ao menos um modelo.'); next.models = v; }
   if ('storages' in body) { const v = list(body.storages, 10); if (!v.length) bad('Cadastre ao menos uma capacidade.'); next.storages = v; }
   if ('colors' in body) { const v = list(body.colors, 40); if (!v.length) bad('Cadastre ao menos uma cor.'); next.colors = v; }
+  const listDiff = (label, a, b) => {
+    const add = b.filter((x) => !a.includes(x)), del = a.filter((x) => !b.includes(x));
+    return [add.length ? `${label} adicionado(s): ${add.join(', ')}` : '', del.length ? `${label} removido(s): ${del.join(', ')}` : ''].filter(Boolean).join('; ');
+  };
+  const cfgChanges = [diffText(cur, next, { storeName: 'nome da loja', lowStock: 'alerta de estoque baixo' }),
+    listDiff('Modelo', cur.models, next.models), listDiff('Capacidade', cur.storages, next.storages), listDiff('Cor', cur.colors, next.colors)].filter(Boolean).join('; ');
   const batch = writeBatch(s.db);
   batch.set(doc(s.db, 'settings', 'public'), next);
-  batch.set(logRef(s), logData(s.me, 'Configurações', 'Atualizou as configurações do sistema'));
+  batch.set(logRef(s), logData(s.me, 'Configurações', `Atualizou as configurações${cfgChanges ? ` — ${cfgChanges}` : ''}`));
   await wrap(batch.commit());
   const p = await wrap(getDoc(doc(s.db, 'settings', 'private')));
   return { ...next, joinCode: p.exists() ? p.data().joinCode : undefined, conditions: CONDITIONS, reasons: REASONS };
@@ -560,7 +603,7 @@ route('POST', '/api/units', 'admin', async ({ s, body }) => {
   const imeis = [...new Set(raw)];
   if (imeis.length !== raw.length) bad('Há IMEIs repetidos na lista.');
   imeis.forEach(validateImei);
-  for (const i of imeis) if ([...units.values()].some((u) => u.imei === i && u.status !== 'saida')) bad(`O IMEI ${i} já está cadastrado no estoque.`);
+  for (const i of imeis) if ([...units.values()].some((u) => u.imei === i && holdsImei(u))) bad(`O IMEI ${i} já está cadastrado no estoque.`);
   const qty = imeis.length || Math.floor(num(body.qty));
   if (!(qty >= 1 && qty <= MAX_ENTRY)) bad(`Quantidade inválida (1 a ${MAX_ENTRY} por entrada).`);
 
@@ -596,9 +639,10 @@ route('PUT', '/api/units/:id', 'admin', async ({ s, params, body }) => {
   const { pub, priv } = readUnitFields(body, true);
   if ('imei' in body) {
     const imei = normImei(body.imei);
-    if (imei) { validateImei(imei); if ([...units.values()].some((x) => x.imei === imei && x.status !== 'saida' && x.id !== u.id)) bad(`O IMEI ${imei} já está cadastrado no estoque.`); }
+    if (imei) { validateImei(imei); if ([...units.values()].some((x) => x.imei === imei && holdsImei(x) && x.id !== u.id)) bad(`O IMEI ${imei} já está cadastrado no estoque.`); }
     pub.imei = imei;
   }
+  if (u.status === 'excluido') bad('Este aparelho está na lixeira. Restaure-o antes de editar.');
   if ('status' in body && body.status !== u.status) {
     if (u.status === 'saida') bad('Este aparelho já saiu do estoque. Use o estorno da movimentação para devolvê-lo.');
     if (!EDITABLE_STATUSES.includes(body.status)) bad('Status inválido.');
@@ -609,7 +653,9 @@ route('PUT', '/api/units/:id', 'admin', async ({ s, params, body }) => {
   batch.update(doc(s.db, 'units', u.id), pub);
   if (Object.keys(priv).length) batch.set(doc(s.db, 'unitPrices', u.id), priv, { merge: true });
   const after = { ...u, ...pub };
-  batch.set(logRef(s), logData(s.me, 'Edição', `Editou ${after.model} ${after.storage} ${after.color}${after.imei ? ` (IMEI ${after.imei})` : ''}`));
+  const pricesBefore = (await pricesMap(s)).get(u.id) || {};
+  const changes = diffText({ ...u, ...pricesBefore }, { ...pub, ...priv }, UNIT_LABELS);
+  batch.set(logRef(s), logData(s.me, 'Edição', `Editou ${u.model} ${u.storage} ${u.color}${u.imei ? ` (IMEI ${u.imei})` : ''}${changes ? ` — ${changes}` : ' — sem alterações'}`));
   await wrap(batch.commit());
   const [photo] = body.photo && after.imei ? readPhotos([{ ...body.photo, imei: after.imei }]) : [];
   if (photo) await savePhotos(s, [photo], { kind: 'edicao', unitByImei: new Map([[after.imei, u.id]]) });
@@ -625,17 +671,21 @@ route('POST', '/api/units/bulk', 'admin', async ({ s, body }) => {
   if (targets.length > 240) bad('Selecione no máximo 240 aparelhos por vez.');
   const batch = writeBatch(s.db);
   if (body.action === 'delete') {
-    for (const u of targets) { batch.delete(doc(s.db, 'units', u.id)); batch.delete(doc(s.db, 'unitPrices', u.id)); }
-    batch.set(logRef(s), logData(s.me, 'Exclusão', `Excluiu ${targets.length} aparelho(s): ${describeItems(targets)}`));
+    const at = now();
+    const list = targets.filter((u) => u.status !== 'excluido');
+    for (const u of list) batch.update(doc(s.db, 'units', u.id), { status: 'excluido', prevStatus: u.status, deletedAt: at, deletedBy: s.me.name, updatedAt: at });
+    batch.set(logRef(s), logData(s.me, 'Exclusão', `Moveu para a lixeira ${list.length} aparelho(s): ${describeItems(list)}${list.some((u) => u.imei) ? ` — IMEIs ${list.filter((u) => u.imei).map((u) => u.imei).join(', ')}` : ''}`));
   } else if (body.action === 'status') {
     if (!EDITABLE_STATUSES.includes(body.value)) bad('Status inválido.');
-    const editable = targets.filter((u) => u.status !== 'saida');
+    const editable = targets.filter((u) => u.status !== 'saida' && u.status !== 'excluido');
     for (const u of editable) batch.update(doc(s.db, 'units', u.id), { status: body.value, updatedAt: now() });
     batch.set(logRef(s), logData(s.me, 'Edição', `Alterou status de ${editable.length} aparelho(s) para ${STATUS_LABEL[body.value]}`));
   } else if (body.action === 'price') {
     const price = money(body.value);
+    const prices = await pricesMap(s);
     for (const u of targets) batch.set(doc(s.db, 'unitPrices', u.id), { price }, { merge: true });
-    batch.set(logRef(s), logData(s.me, 'Edição', `Alterou preço de venda de ${targets.length} aparelho(s)`));
+    const old = [...new Set(targets.map((u) => fmtBRL(prices.get(u.id)?.price)))].join(', ');
+    batch.set(logRef(s), logData(s.me, 'Edição', `Alterou preço de venda de ${targets.length} aparelho(s): ${old} → ${fmtBRL(price)}`));
   } else bad('Ação inválida.');
   await wrap(batch.commit());
   return { ok: true, count: targets.length };
@@ -644,12 +694,27 @@ route('POST', '/api/units/bulk', 'admin', async ({ s, body }) => {
 route('DELETE', '/api/units/:id', 'admin', async ({ s, params }) => {
   const u = (await unitsMap(s)).get(params.id);
   if (!u) throw new ApiError(404, 'Aparelho não encontrado.');
+  if (u.status === 'excluido') bad('Este aparelho já está na lixeira.');
+  const at = now();
   const batch = writeBatch(s.db);
-  batch.delete(doc(s.db, 'units', u.id));
-  batch.delete(doc(s.db, 'unitPrices', u.id));
-  batch.set(logRef(s), logData(s.me, 'Exclusão', `Excluiu ${u.model} ${u.storage} ${u.color}${u.imei ? ` (IMEI ${u.imei})` : ''}`));
+  batch.update(doc(s.db, 'units', u.id), { status: 'excluido', prevStatus: u.status, deletedAt: at, deletedBy: s.me.name, updatedAt: at });
+  batch.set(logRef(s), logData(s.me, 'Exclusão', `Moveu para a lixeira ${u.model} ${u.storage} ${u.color}${u.imei ? ` (IMEI ${u.imei})` : ''}`));
   await wrap(batch.commit());
   return { ok: true };
+});
+
+route('POST', '/api/units/:id/restore', 'admin', async ({ s, params }) => {
+  const units = await unitsMap(s);
+  const u = units.get(params.id);
+  if (!u) throw new ApiError(404, 'Aparelho não encontrado.');
+  if (u.status !== 'excluido') bad('Este aparelho não está na lixeira.');
+  const back = ['disponivel', 'reservado', 'manutencao', 'saida'].includes(u.prevStatus) ? u.prevStatus : 'disponivel';
+  if (u.imei && back !== 'saida' && [...units.values()].some((x) => x.id !== u.id && x.imei === u.imei && holdsImei(x))) bad(`O IMEI ${u.imei} já está em outro aparelho do estoque.`);
+  const batch = writeBatch(s.db);
+  batch.update(doc(s.db, 'units', u.id), { status: back, prevStatus: null, deletedAt: null, deletedBy: null, updatedAt: now() });
+  batch.set(logRef(s), logData(s.me, 'Restauração', `Restaurou da lixeira ${u.model} ${u.storage} ${u.color}${u.imei ? ` (IMEI ${u.imei})` : ''}`));
+  await wrap(batch.commit());
+  return { ok: true, status: back };
 });
 
 // ── Movimentações (admin)
@@ -670,7 +735,7 @@ route('POST', '/api/movements/:id/revert', 'admin', async ({ s, params, body }) 
     for (const it of m.items) {
       const u = units.get(it.id);
       if (u && (u.status !== 'saida' || u.outMovementId !== m.id)) bad(`O aparelho ${u.model} ${u.storage} já foi movimentado depois desta saída.`);
-      if (!u && it.imei && [...units.values()].some((x) => x.imei === it.imei && x.status !== 'saida')) bad(`O IMEI ${it.imei} já está no estoque novamente.`);
+      if (!u && it.imei && [...units.values()].some((x) => x.imei === it.imei && holdsImei(x))) bad(`O IMEI ${it.imei} já está no estoque novamente.`);
     }
     for (const it of m.items) {
       const ref = doc(s.db, 'units', it.id);
@@ -684,7 +749,7 @@ route('POST', '/api/movements/:id/revert', 'admin', async ({ s, params, body }) 
   } else if (m.type === 'entrada') {
     const list = m.unitIds.map((id) => units.get(id)).filter(Boolean);
     if (list.some((u) => u.status === 'saida')) bad('Não é possível estornar: parte dos aparelhos desta entrada já saiu do estoque.');
-    for (const u of list) { batch.delete(doc(s.db, 'units', u.id)); batch.delete(doc(s.db, 'unitPrices', u.id)); }
+    for (const u of list.filter((x) => x.status !== 'excluido')) batch.update(doc(s.db, 'units', u.id), { status: 'excluido', prevStatus: u.status, deletedAt: at, deletedBy: s.me.name, deletedReason: 'Estorno da entrada', updatedAt: at });
   } else bad('Este tipo de movimentação não pode ser estornado.');
   batch.update(doc(s.db, 'movements', m.id), { reverted: true, revertedAt: at, revertedBy: s.me.name });
   batch.set(doc(collection(s.db, 'movements')), {
@@ -700,7 +765,7 @@ route('POST', '/api/movements/:id/revert', 'admin', async ({ s, params, body }) 
 // ── Dashboard (admin)
 route('GET', '/api/dashboard', 'admin', async ({ s }) => {
   const [unitsM, prices, movs, settings] = await Promise.all([unitsMap(s), pricesMap(s), movementsMap(s), loadSettings(s)]);
-  const units = [...unitsM.values()].map((u) => ({ ...u, cost: 0, price: 0, ...(prices.get(u.id) || {}) }));
+  const units = [...unitsM.values()].filter((u) => u.status !== 'excluido').map((u) => ({ ...u, cost: 0, price: 0, ...(prices.get(u.id) || {}) }));
   const inStock = units.filter((u) => u.status !== 'saida');
   const avail = inStock.filter((u) => u.status === 'disponivel');
   const outs = [...movs.values()].filter((m) => m.type === 'saida' && !m.reverted).map((m) => withValues(m, prices));
@@ -753,11 +818,21 @@ route('GET', '/api/dashboard', 'admin', async ({ s }) => {
     sellers: Object.values(sellers).sort((a, b) => b.qty - a.qty),
     topModels: Object.entries(soldModels).map(([key, qty]) => ({ key, qty })).sort((a, b) => b.qty - a.qty).slice(0, 5),
     recent: [...movs.values()].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8).map((m) => withValues(m, prices)),
+    trash: [...unitsM.values()].filter((u) => u.status === 'excluido').length,
+    ...(await safety(s)),
   };
 });
 
+// Avisos de segurança dos dados: último backup e quantidade de administradores ativos
+async function safety(s) {
+  try {
+    const [priv, users] = await Promise.all([getDoc(doc(s.db, 'settings', 'private')), allUsers(s)]);
+    return { lastBackupAt: priv.exists() ? priv.data().lastBackupAt || null : null, activeAdmins: users.filter((u) => u.role === 'admin' && u.active).length };
+  } catch { return { lastBackupAt: null, activeAdmins: null }; }
+}
+
 // ── Usuários (admin)
-const userOut = (d) => ({ id: d.id, ...d.data(), hasPassword: true, hasLink: false, defaultPassword: false, pending: d.data().status === 'pending', active: d.data().status === 'active' });
+const userOut = (d) => ({ id: d.id, ...d.data(), hasPassword: true, hasLink: false, defaultPassword: false, pending: d.data().status === 'pending', active: d.data().status === 'active', removed: ['removed', 'rejected'].includes(d.data().status) });
 async function allUsers(s) { return (await wrap(getDocs(collection(s.db, 'users')))).docs.map(userOut); }
 
 route('GET', '/api/users', 'admin', async ({ s }) => allUsers(s));
@@ -807,10 +882,12 @@ route('PUT', '/api/users/:id', 'admin', async ({ s, params, body }) => {
     if (!body.active && u.id === s.me.id) bad('Você não pode desativar a si mesmo.');
     if (!body.active && u.role === 'admin' && !otherAdmins) bad('O sistema precisa de pelo menos um administrador ativo.');
     patch.status = body.active ? 'active' : 'disabled';
+    if (body.active) { patch.removedAt = null; patch.removedBy = null; }
   }
   const batch = writeBatch(s.db);
   batch.update(doc(s.db, 'users', u.id), patch);
-  batch.set(logRef(s), logData(s.me, 'Usuários', `Atualizou o usuário ${u.email}`));
+  const userChanges = diffText(u, patch, { name: 'nome', role: 'perfil', status: 'situação' });
+  batch.set(logRef(s), logData(s.me, 'Usuários', `Atualizou o usuário ${u.email}${userChanges ? ` — ${userChanges}` : ''}`));
   await wrap(batch.commit());
   if (u.id === s.me.id) sess = null;
   return { ...u, ...patch, active: (patch.status || u.status) === 'active' };
@@ -843,8 +920,8 @@ route('DELETE', '/api/users/:id', 'admin', async ({ s, params }) => {
   if (u.id === s.me.id) bad('Você não pode excluir a si mesmo.');
   if (u.role === 'admin' && !users.some((x) => x.role === 'admin' && x.active && x.id !== u.id)) bad('O sistema precisa de pelo menos um administrador ativo.');
   const batch = writeBatch(s.db);
-  batch.delete(doc(s.db, 'users', u.id));
-  batch.set(logRef(s), logData(s.me, 'Usuários', u.pending ? `Recusou a solicitação de ${u.email}` : `Excluiu o usuário ${u.email}`));
+  batch.update(doc(s.db, 'users', u.id), { status: u.pending ? 'rejected' : 'removed', removedAt: now(), removedBy: s.me.name });
+  batch.set(logRef(s), logData(s.me, 'Usuários', u.pending ? `Recusou a solicitação de ${u.email}` : `Removeu o acesso de ${u.email} (o cadastro e o histórico são mantidos)`));
   await wrap(batch.commit());
   return { ok: true };
 });
@@ -853,12 +930,75 @@ route('DELETE', '/api/users/:id', 'admin', async ({ s, params }) => {
 route('GET', '/api/logs', 'admin', async ({ s }) =>
   (await wrap(getDocs(query(collection(s.db, 'logs'), orderBy('at', 'desc'), limit(1000))))).docs.map((d) => ({ id: d.id, ...d.data() })));
 
-route('GET', '/api/backup', 'admin', async ({ s }) => {
-  const [units, movements, users, settings, logs] = await Promise.all([
-    routeCall('GET', '/api/units'), routeCall('GET', '/api/movements'), allUsers(s), loadSettings(s), routeCall('GET', '/api/logs'),
+route('GET', '/api/backup', 'admin', async ({ s, body }) => {
+  const withPhotos = !!body?.photos;
+  const [units, movements, users, settings] = await Promise.all([
+    routeCall('GET', '/api/units'), routeCall('GET', '/api/movements'), allUsers(s), loadSettings(s),
   ]);
-  await addLog(s, s.me, 'Backup', 'Exportou backup completo');
-  return { exportedAt: now(), settings, users, units, movements, logs };
+  const logs = (await wrap(getDocs(collection(s.db, 'logs')))).docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at.localeCompare(a.at));
+  const photos = withPhotos ? (await wrap(getDocs(collection(s.db, 'photos')))).docs.map((d) => ({ id: d.id, ...d.data() })) : undefined;
+  const at = now();
+  await setDoc(doc(s.db, 'settings', 'private'), { lastBackupAt: at }, { merge: true }).catch(() => {});
+  await addLog(s, s.me, 'Backup', `Exportou backup completo${withPhotos ? ' com fotos' : ''} (${units.length} aparelhos, ${movements.length} movimentações)`);
+  return { app: 'imperio-cell-estoque', format: 2, exportedAt: at, settings, users, units, movements, logs, ...(photos ? { photos } : {}) };
+});
+
+// Restauração: recria SÓ o que falta no banco (pelo id), sem sobrescrever nada que existe.
+// Aceita o backup deste sistema e o arquivo data/db.json do sistema antigo (servidor Node).
+const VALID_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const UNIT_PUB = ['model', 'storage', 'color', 'condition', 'battery', 'imei', 'status', 'createdAt', 'updatedAt', 'createdBy', 'outAt', 'outMovementId', 'prevStatus', 'deletedAt', 'deletedBy', 'deletedReason'];
+const MOV_KEYS = ['type', 'at', 'userId', 'userName', 'reason', 'customer', 'note', 'unitIds', 'items', 'qty', 'value', 'cost', 'reverted', 'revertedAt', 'revertedBy', 'refId', 'refType', 'photos'];
+const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+function readBackup(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.units) || !Array.isArray(data.movements)) bad('Arquivo inválido: não é um backup do sistema de estoque.');
+  const units = data.units.filter((u) => u && VALID_ID.test(String(u.id)) && u.model && u.storage).map((u) => ({
+    id: String(u.id),
+    pub: { ...pick(u, UNIT_PUB), imei: normImei(u.imei), status: ['disponivel', 'reservado', 'manutencao', 'saida', 'excluido'].includes(u.status) ? u.status : 'disponivel' },
+    priv: { cost: Number(u.cost) || 0, price: Number(u.price) || 0, supplier: str(u.supplier || '', 80), note: str(u.note || '', 300) },
+  }));
+  const movements = data.movements.filter((m) => m && VALID_ID.test(String(m.id)) && m.type && m.at && Array.isArray(m.items)).map((m) => ({ id: String(m.id), data: pick(m, MOV_KEYS) }));
+  const logs = (Array.isArray(data.logs) ? data.logs : []).filter((l) => l && VALID_ID.test(String(l.id)) && l.at).map((l) => ({ id: String(l.id), data: { at: l.at, userId: String(l.userId || ''), userName: str(l.userName || 'Sistema', 60), action: str(l.action || '', 40), detail: str(l.detail || '', 2000) } }));
+  const photos = (Array.isArray(data.photos) ? data.photos : []).filter((p) => p && VALID_ID.test(String(p.id)) && String(p.image || '').startsWith('data:image/jpeg;base64,'))
+    .map((p) => ({ id: String(p.id), data: { movementId: String(p.movementId || ''), kind: ['entrada', 'saida', 'edicao'].includes(p.kind) ? p.kind : 'saida', unitId: String(p.unitId || ''), userId: String(p.userId || ''), userName: str(p.userName || '', 60), imei: normImei(p.imei), image: p.image, at: p.at || now() } }));
+  const source = data.app === 'imperio-cell-estoque' ? `backup de ${new Date(data.exportedAt).toLocaleString('pt-BR')}` : 'sistema antigo (data/db.json)';
+  return { units, movements, logs, photos, source };
+}
+async function restorePlan(s, data) {
+  const b = readBackup(data);
+  const [units, movs] = await Promise.all([unitsMap(s), movementsMap(s)]);
+  const logIds = new Set((await wrap(getDocs(collection(s.db, 'logs')))).docs.map((d) => d.id));
+  const photoIds = new Set();
+  if (b.photos.length) for (const d of (await wrap(getDocs(collection(s.db, 'photos')))).docs) photoIds.add(d.id);
+  return {
+    source: b.source,
+    total: { units: b.units.length, movements: b.movements.length, logs: b.logs.length, photos: b.photos.length },
+    missing: {
+      units: b.units.filter((u) => !units.has(u.id)),
+      movements: b.movements.filter((m) => !movs.has(m.id)),
+      logs: b.logs.filter((l) => !logIds.has(l.id)),
+      photos: b.photos.filter((p) => !photoIds.has(p.id)),
+    },
+  };
+}
+route('POST', '/api/restore/preview', 'admin', async ({ s, body }) => {
+  const plan = await restorePlan(s, body.data);
+  return { source: plan.source, total: plan.total, missing: Object.fromEntries(Object.entries(plan.missing).map(([k, v]) => [k, v.length])) };
+});
+route('POST', '/api/restore', 'admin', async ({ s, body }) => {
+  const plan = await restorePlan(s, body.data);
+  const ops = [];
+  for (const u of plan.missing.units) { ops.push(['units', u.id, u.pub]); ops.push(['unitPrices', u.id, u.priv]); }
+  for (const m of plan.missing.movements) ops.push(['movements', m.id, m.data]);
+  for (const l of plan.missing.logs) ops.push(['logs', l.id, l.data]);
+  for (const p of plan.missing.photos) ops.push(['photos', p.id, p.data]);
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = writeBatch(s.db);
+    for (const [col, id, data] of ops.slice(i, i + 400)) batch.set(doc(s.db, col, id), data);
+    await wrap(batch.commit());
+  }
+  const n = Object.fromEntries(Object.entries(plan.missing).map(([k, v]) => [k, v.length]));
+  await addLog(s, s.me, 'Restauração', `Restaurou do ${plan.source}: ${n.units} aparelho(s), ${n.movements} movimentação(ões), ${n.logs} registro(s) de auditoria, ${n.photos} foto(s)`);
+  return { restored: n };
 });
 
 // ───────────────────────── Despacho ─────────────────────────

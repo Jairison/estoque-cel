@@ -222,6 +222,7 @@ const STATUS = {
   reservado: { label: 'Reservado', cls: 'blue' },
   manutencao: { label: 'Manutenção', cls: 'orange' },
   saida: { label: 'Saiu', cls: '' },
+  excluido: { label: 'Na lixeira', cls: 'red' },
 };
 const MV_TYPE = {
   entrada: { label: 'Entrada', cls: 'green', icon: 'in' },
@@ -419,6 +420,17 @@ function openChangePassword() {
   m.$('[data-save]').addEventListener('click', submit);
   m.$('[data-form]').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
 }
+
+// Sem conexão com o banco: avisa que os dados exibidos podem estar desatualizados
+window.addEventListener('db-offline', () => {
+  if (document.querySelector('[data-offline]')) return;
+  const el = document.createElement('div');
+  el.dataset.offline = '1';
+  el.className = 'offline-bar';
+  el.innerHTML = `${icon('alert')}<span><b>Sem conexão com o servidor.</b> Os dados mostrados podem estar desatualizados e nada será salvo até a internet voltar.</span><button class="btn btn-sm" onclick="location.reload()">Tentar de novo</button>`;
+  document.body.prepend(el);
+});
+window.addEventListener('offline', () => window.dispatchEvent(new Event('db-offline')));
 
 // Página aberta direto do arquivo (duplo clique): o navegador bloqueia os módulos do Firebase
 if (location.protocol === 'file:') {

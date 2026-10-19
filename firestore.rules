@@ -2,6 +2,8 @@ rules_version = '2';
 
 // Império Cell — regras de segurança do Cloud Firestore.
 // Cole este conteúdo em: Firebase Console → Firestore Database → Regras → Publicar.
+// PROTEÇÃO DOS DADOS: nenhum documento pode ser apagado (não existe "allow delete").
+// Aparelhos excluídos vão para a lixeira (status "excluido") e usuários removidos ficam marcados.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -32,21 +34,21 @@ service cloud.firestore {
     // Nome da loja e catálogo: leitura pública (tela de login), alteração só pelo admin
     match /settings/public {
       allow read: if true;
-      allow write: if isAdminAfter();
+      allow create, update: if isAdminAfter();
     }
     // Código da loja: só o admin vê
     match /settings/private {
       allow read: if isAdmin();
-      allow write: if isAdminAfter();
+      allow create, update: if isAdminAfter();
     }
 
     match /users/{uid} {
       function validUser() {
-        return data().keys().hasOnly(['name', 'email', 'role', 'status', 'createdAt', 'lastLogin', 'joinCode'])
+        return data().keys().hasOnly(['name', 'email', 'role', 'status', 'createdAt', 'lastLogin', 'joinCode', 'removedAt', 'removedBy'])
           && text(data().name, 60) && data().name.size() > 0
           && text(data().email, 120)
           && data().role in ['admin', 'colaborador']
-          && data().status in ['active', 'pending', 'disabled'];
+          && data().status in ['active', 'pending', 'disabled', 'removed', 'rejected'];
       }
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
       allow create: if validUser() && (isAdmin() || (
@@ -65,14 +67,13 @@ service cloud.firestore {
       ));
       // A própria pessoa só pode atualizar o horário do último acesso
       allow update: if (isAdmin() && validUser()) || (signedIn() && request.auth.uid == uid && onlyChanged(['lastLogin']));
-      allow delete: if isAdmin();
     }
 
     // Aparelhos: todos os usuários ativos veem (sem preços).
     // O colaborador só pode dar saída, e somente junto com a movimentação de saída que lista o aparelho.
     match /units/{id} {
       allow read: if active();
-      allow create, delete: if isAdmin();
+      allow create: if isAdmin();
       allow update: if isAdmin() || (
         active() && resource.data.status == 'disponivel' && data().status == 'saida'
         && onlyChanged(['status', 'outAt', 'outMovementId', 'updatedAt'])
@@ -85,7 +86,7 @@ service cloud.firestore {
 
     // Custo, preço, fornecedor e observações: somente o admin
     match /unitPrices/{id} {
-      allow read, write: if isAdmin();
+      allow read, create, update: if isAdmin();
     }
 
     // Movimentações: o colaborador vê e cria apenas as próprias saídas, sem valores,
@@ -106,7 +107,7 @@ service cloud.firestore {
         && getAfter(docPath('units', data().unitIds[0])).data.outMovementId == id
         && getAfter(docPath('units', data().unitIds[data().qty - 1])).data.outMovementId == id
       );
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin();
     }
 
     // Fotos do IMEI (entrada, saída e cadastro do IMEI): JPEG com tamanho limitado.
@@ -114,7 +115,7 @@ service cloud.firestore {
     match /photos/{id} {
       function validPhoto() {
         return data().keys().hasOnly(['movementId', 'kind', 'unitId', 'userId', 'userName', 'imei', 'image', 'at'])
-          && data().userId == request.auth.uid
+          && (data().userId == request.auth.uid || isAdmin())
           && data().kind in ['entrada', 'saida', 'edicao']
           && text(data().imei, 20) && text(data().movementId, 64) && text(data().unitId, 64)
           && data().image is string && data().image.size() <= 450000
@@ -128,7 +129,6 @@ service cloud.firestore {
           && exists(docPath('movements', data().movementId))
           && get(docPath('movements', data().movementId)).data.userId == request.auth.uid)
       );
-      allow delete: if isAdmin();
     }
 
     // Auditoria: só quem tem cadastro registra as próprias ações (com o próprio nome); só o admin lê
@@ -136,7 +136,7 @@ service cloud.firestore {
       allow read: if isAdmin();
       allow create: if signedIn() && existsAfter(userPath())
         && data().keys().hasOnly(['at', 'userId', 'userName', 'action', 'detail'])
-        && data().userId == request.auth.uid
+        && (data().userId == request.auth.uid || isAdminAfter())
         && text(data().action, 40) && text(data().detail, 2000)
         && (isAdminAfter() || data().userName == getAfter(userPath()).data.name);
     }
